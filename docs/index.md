@@ -34,6 +34,23 @@ start/metrics.md
 ```
 
 ```{toctree}
+:maxdepth: 2
+:caption: Examples
+
+examples/flowgrpo_trainer.md
+examples/flowgrpo_trainer_bagal.md
+examples/flowgrpo_trainer_qwen_image_edit.md
+examples/flowdppo_trainer.md
+examples/dpo_trainer.md
+examples/dancegrpo_trainer.md
+examples/diffusionnft_trainer.md
+examples/grpoguard_trainer.md
+examples/gspo_trainer.md
+examples/mixgrpo_trainer.md
+start/sd35_drm_flow_grpo.md
+```
+
+```{toctree}
 :maxdepth: 1
 :caption: Advanced Features
 
@@ -41,7 +58,6 @@ algo/async_reward.md
 algo/rollout_correction.md
 start/rollout_batching.md
 start/http_scorer.md
-start/sd35_drm_flow_grpo.md
 ```
 
 ```{toctree}
