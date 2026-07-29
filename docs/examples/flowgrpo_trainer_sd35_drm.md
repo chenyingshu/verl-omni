@@ -1,4 +1,4 @@
-# Quickstart: SD3.5 FlowGRPO with a latent reward model
+# SD3.5 FlowGRPO training with a latent reward model
 
 Last updated: 07/20/2026
 
@@ -21,7 +21,7 @@ and PyTorch stacks.
 
 ## Prerequisite
 
-- Install VeRL-Omni by following the {doc}`installation guide <install>`.
+- Install VeRL-Omni by following the {doc}`installation guide <../start/install>`.
 - Prepare a `diffusion-rm` environment with its HTTP server dependencies.
 - Use a machine with 8 GPUs for the provided script: 7 GPUs for actor and
   rollout workers, and 1 GPU for the DRM server.
@@ -136,5 +136,5 @@ of silently contributing a zero reward.
 
 ## Further reading
 
-- See {doc}`flowgrpo_quickstart` for the standard SD3.5 OCR FlowGRPO example.
+- See {doc}`../start/flowgrpo_quickstart` for the standard SD3.5 OCR FlowGRPO example.
 - See {doc}`../algo/flowgrpo` for the algorithm and configuration reference.
