@@ -2,12 +2,12 @@
 
 Last updated: 07/06/2026
 
-[BAGEL-7B-MoT](https://github.com/ByteDance-Seed/BAGEL-7B-MoT) is a
+[BAGEL-7B-MoT](https://github.com/ByteDance-Seed/BAGEL) is a
 Mixture-of-Transformers model supporting both image understanding and
 generation.  Unlike Qwen-Image, BAGEL is a **non-diffusers** model — it
 cannot be loaded by diffusers and uses its own weight-loading path via
 ``NonDiffusersModelBase``.  See
-[How to Integrate a Non-Diffusers Model for FlowGRPO Training](../../docs/contributing/integrating_a_non_diffusers_model.md)
+[How to Integrate a Non-Diffusers Model for FlowGRPO Training](../contributing/integrating_a_non_diffusers_model.md)
 for the integration architecture.
 
 ## Prerequisites
@@ -141,5 +141,5 @@ wrapper replacement but simply has ``requires_grad=False`` set by the
 
 ## Further reading
 
-- {doc}`integrating_a_non_diffusers_model` — full integration guide using BAGEL as the worked example
+- {doc}`../contributing/integrating_a_non_diffusers_model` — full integration guide using BAGEL as the worked example
 - [vLLM-Omni BAGEL docs](https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/bagel/)

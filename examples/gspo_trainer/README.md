@@ -142,7 +142,7 @@ offload enabled.
 ## Training with `MMK12`
 
 For visual math reasoning we ship an end-to-end pipeline on top of the
-[MMK12](https://huggingface.co/datasets/FangqingM/MMK12) dataset (image
+[MMK12](https://huggingface.co/datasets/FanqingM/MMK12) dataset (image
 input + text output, K12 math). It reuses the same GSPO recipe as the
 text-only path — only the data preprocessing and the reward scorer differ.
 Use the dedicated V1 GPU/LoRA script:

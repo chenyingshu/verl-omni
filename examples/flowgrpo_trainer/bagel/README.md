@@ -1,6 +1,6 @@
 # BAGEL-7B-MoT FlowGRPO training
 
-[BAGEL-7B-MoT](https://github.com/ByteDance-Seed/BAGEL-7B-MoT) is a
+[BAGEL-7B-MoT](https://github.com/ByteDance-Seed/BAGEL) is a
 Mixture-of-Transformers model supporting both image understanding and
 generation.  Unlike Qwen-Image, BAGEL is a **non-diffusers** model — it
 cannot be loaded by diffusers and uses its own weight-loading path via

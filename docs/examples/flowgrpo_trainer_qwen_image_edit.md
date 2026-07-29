@@ -1,4 +1,4 @@
-# Train Qwen-Image-Edit-2511 with FlowGRPO
+# Qwen-Image-Edit-2511 FlowGRPO training
 
 Last updated: 07/14/2026
 

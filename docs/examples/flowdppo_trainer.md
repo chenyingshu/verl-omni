@@ -4,7 +4,7 @@ Last updated: 06/30/2026
 
 This example shows how to post-train `Qwen-Image` with Flow-DPPO on an OCR-style image generation task using `vllm-omni` rollout and a visual generative reward model (`Qwen3-VL-8B-Instruct` in this example).
 
-Flow-DPPO reuses the FlowGRPO training stack, but replaces ratio clipping with a divergence-based mask over denoising transitions. For algorithm details, see [Algorithms - Flow-DPPO](../algo/flowdppo.md); for the shared Qwen-Image OCR setup, see [Examples - FlowGRPO Trainer](examples/flowgrpo_trainer.md).
+Flow-DPPO reuses the FlowGRPO training stack, but replaces ratio clipping with a divergence-based mask over denoising transitions. For algorithm details, see [Algorithms - Flow-DPPO](../algo/flowdppo.md); for the shared Qwen-Image OCR setup, see [Examples - FlowGRPO Trainer](flowgrpo_trainer.md).
 
 ## Installation
 

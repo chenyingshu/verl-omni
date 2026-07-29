@@ -29,8 +29,8 @@ training step it:
 ### Dataset
 
 Use the same OCR prompt parquet as FlowGRPO Qwen-Image training. Prepare the
-data following {doc}`flowgrpo_trainer#prepare-the-dataset`
-in [Examples - FlowGRPO](flowgrpo_trainer) (raw OCR from
+data following [Prepare the dataset](flowgrpo_trainer.md#prepare-the-dataset)
+in [Examples - FlowGRPO Trainer](flowgrpo_trainer) (raw OCR from
 [flow_grpo/dataset/ocr](https://github.com/yifan123/flow_grpo/tree/main/dataset/ocr),
 then `examples/flowgrpo_trainer/data_process/qwenimage_ocr.py` to write
 `$WORKSPACE/data/ocr/qwen_image/train.parquet` and `test.parquet`).

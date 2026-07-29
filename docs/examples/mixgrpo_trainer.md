@@ -6,7 +6,7 @@ This example shows how to post-train `Qwen-Image` with MixGRPO on an OCR-style i
 
 MixGRPO extends FlowGRPO with a **Mixed ODE-SDE rollout** and a **sliding-window training schedule**. This greatly cuts the cost of online RL fine-tuning of flow-matching diffusion models by using deterministic ODE sampling outside a contiguous window of denoising steps and stochastic SDE sampling inside the window.
 
-For algorithm details, configuration reference, and tuning guides, see [Algorithms - Mix-GRPO](../algo/mixgrpo.md). For the full installation and base FlowGRPO quickstart guide, see {doc}`flowgrpo_quickstart`.
+For algorithm details, configuration reference, and tuning guides, see [Algorithms - Mix-GRPO](../algo/mixgrpo.md). For the full installation and base FlowGRPO quickstart guide, see {doc}`../start/flowgrpo_quickstart`.
 
 ## Installation
 
