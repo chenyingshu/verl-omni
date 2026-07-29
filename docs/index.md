@@ -58,6 +58,7 @@ algo/async_reward.md
 algo/rollout_correction.md
 start/rollout_batching.md
 start/http_scorer.md
+start/diffusion_v1.md
 ```
 
 ```{toctree}
@@ -107,6 +108,7 @@ api/utils.rst
 contributing/editing-agent-instructions.md
 contributing/ci_cd.md
 contributing/testing_guide.md
+contributing/integrating_an_omni_model.md
 contributing/integrating_a_diffusion_model.md
 contributing/integrating_an_i2i_diffusion_model.md
 contributing/integrating_a_non_diffusers_model.md
