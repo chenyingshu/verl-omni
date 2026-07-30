@@ -4,7 +4,7 @@ Last updated: 06/30/2026
 
 This example shows how to post-train `Qwen-Image` with GRPO-Guard on an OCR-style image generation task. GRPO-Guard extends Flow-GRPO with a reverse-SDE proposal-mean drift correction and per-step loss rescaling for improved training stability.
 
-For algorithm details, see [Algorithms - GRPO-Guard](../../docs/algo/grpo_guard.md). For the base Flow-GRPO setup this example builds on, see [Examples - FlowGRPO Trainer](../../docs/examples/flowgrpo_trainer.md).
+For algorithm details, see [Algorithms - GRPO-Guard](../../docs/algo/grpo_guard.md). For the base Flow-GRPO setup this example builds on, see [Examples - FlowGRPO Trainer](https://verl-omni.readthedocs.io/en/latest/examples/flowgrpo_trainer.html).
 
 ## Installation
 
