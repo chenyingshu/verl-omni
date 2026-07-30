@@ -169,3 +169,12 @@ qwen_image_ocr_lora_async_reward: corresponding with the script `examples/flowgr
 </div>
 
 > **Note:** Reward curves may differ from the references above mainly due to rollout-side stochasticity: diffusion rollouts sample random latents/noise, and the example scripts do not fix the data seed, so prompt ordering can vary between runs.
+
+
+## Further Reading
+For more examples of FlowGRPO training other models, see
+- Stable Diffusion: [Quickstart: FlowGRPO training on OCR dataset](../../docs/start/flowgrpo_quickstart.md)
+- Image-to-image model: [Examples - Qwen-Image-Edit-2511 FlowGRPO training](../../docs/examples/qwen_image_edit/flowgrpo_trainer_qwen_image_edit.md)
+- Unified image understanding and generation model: [Examples - BAGEL-7B-MoT FlowGRPO training](../../docs/examples/bagel/flowgrpo_trainer_bagel.md)
+
+To train a model with a latent reward model, see [Examples - SD3.5 FlowGRPO training with a latent reward model](../../docs/examples/flowgrpo_trainer_sd35_drm.md).

@@ -29,7 +29,7 @@ training step it:
 ### Dataset
 
 Use the same OCR prompt parquet as FlowGRPO Qwen-Image training. Prepare the
-data following [Prepare the dataset](../../docs/examples/flowgrpo_trainer.html#prepare-the-dataset)
+data following [Prepare the dataset](https://verl-omni.readthedocs.io/en/latest/examples/flowgrpo_trainer.html#prepare-the-dataset)
 in [Examples - FlowGRPO Trainer](../../docs/examples/flowgrpo_trainer.md) (raw OCR from
 [flow_grpo/dataset/ocr](https://github.com/yifan123/flow_grpo/tree/main/dataset/ocr),
 then `examples/flowgrpo_trainer/data_process/qwenimage_ocr.py` to write
