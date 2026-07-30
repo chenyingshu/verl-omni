@@ -1,1 +1,0 @@
-../../../examples/flowgrpo_trainer/bagal/README.md
