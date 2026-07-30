@@ -62,9 +62,6 @@ algo/performance.md
 :caption: Examples
 
 examples/flowgrpo_trainer.md
-examples/flowgrpo_trainer_sd35_drm.md
-examples/flowgrpo_trainer_bagal.md
-examples/flowgrpo_trainer_qwen_image_edit.md
 examples/flowdppo_trainer.md
 examples/dpo_trainer.md
 examples/dancegrpo_trainer.md
@@ -72,6 +69,9 @@ examples/diffusionnft_trainer.md
 examples/grpoguard_trainer.md
 examples/gspo_trainer.md
 examples/mixgrpo_trainer.md
+examples/flowgrpo_trainer_sd35_drm.md
+examples/flowgrpo_trainer_bagal.md
+examples/flowgrpo_trainer_qwen_image_edit.md
 ```
 
 ```{toctree}
