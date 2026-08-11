@@ -24,6 +24,8 @@ class DiffusionOutput(BaseModel):
     """generated image tensor (CHW format) / video tensor (TCHW format)"""
     log_probs: Optional[Any] = None
     """logprobs of generated image/video"""
+    llm_log_probs: Optional[Any] = None
+    """logprobs of generated tokens"""
     stop_reason: Optional[str] = None
     """stop reason: 'completed', 'aborted', or None for unknown"""
     num_preempted: Optional[int] = None
