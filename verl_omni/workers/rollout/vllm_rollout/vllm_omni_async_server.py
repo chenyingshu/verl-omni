@@ -608,16 +608,16 @@ class vLLMOmniHttpServer(vLLMHttpServer):
             diffusion_output = self._to_tensor(diffusion_output).float() / 255.0
 
         # Extract extra data from custom_output (populated by DiffusionEngine)
-        mm_output = final_res.custom_output or {}
+        custom_output = final_res.custom_output or {}
 
         if sampling_params.get("logprobs", False):
-            all_log_probs = mm_output.get("all_log_probs")
+            all_log_probs = custom_output.get("all_log_probs")
             log_probs = all_log_probs[0] if all_log_probs is not None else None
         else:
             log_probs = None
 
         if sampling_params.get("llm_logprobs", False):
-            llm_all_log_probs = mm_output.get("llm_all_log_probs")
+            llm_all_log_probs = custom_output.get("llm_all_log_probs")
             llm_log_probs = llm_all_log_probs[0] if all_log_probs is not None else None
         else:
             llm_log_probs = None
@@ -634,7 +634,11 @@ class vLLMOmniHttpServer(vLLMHttpServer):
             return value
 
         skip_keys = {"all_log_probs", "llm_all_log_probs"}
-        extra_fields = {k: _maybe_unbatch(v) for k, v in mm_output.items() if k not in skip_keys}
+        extra_fields = {k: _maybe_unbatch(v) for k, v in custom_output.items() if k not in skip_keys}
+        multimodal_output = final_res.multimodal_output or {}
+        if isinstance(multimodal_output, dict):
+            for key, value in multimodal_output.items():
+                extra_fields.setdefault(key, _maybe_unbatch(value))
         extra_fields["global_steps"] = self.global_steps
 
         if final_res.request_output is not None and hasattr(final_res.request_output, "finish_reason"):
