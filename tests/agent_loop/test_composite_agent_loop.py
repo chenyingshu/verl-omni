@@ -30,6 +30,40 @@ from verl_omni.agent_loop.composite_agent_loop import CompositeAgentLoopWorker
 from ..utils.gpu_test_topology import resolve_diffusion_agent_loop_gpu_topology
 
 
+def _assert_non_empty_tensor(value, field_name: str) -> None:
+    assert value is not None, f"{field_name} should not be None"
+    assert isinstance(value, torch.Tensor), f"{field_name} should be a torch.Tensor, got {type(value).__name__}"
+    assert value.numel() > 0, f"{field_name} should not be empty"
+
+
+def _assert_text_encoder_outputs(result: DataProto, *, batch_size: int, max_token_len: int) -> None:
+    """Validate Qwen-Image text-encoder returns by rollout."""
+    llm_response_ids = result.batch["llm_response_ids"]
+    llm_all_log_probs = result.batch.get("rollout_llm_log_probs")
+    text_encoder_responses = result.non_tensor_batch["text_encoder_responses"]  # list[str]
+    _assert_non_empty_tensor(llm_response_ids, "llm_response_ids")
+    _assert_non_empty_tensor(llm_all_log_probs, "llm_all_log_probs")
+
+    assert llm_response_ids.shape == (batch_size, max_token_len)
+    if llm_all_log_probs is not None:
+        assert llm_all_log_probs.shape[1] <= max_token_len
+        assert llm_all_log_probs.shape == (batch_size, llm_all_log_probs.shape[1], llm_all_log_probs.shape[-1])
+    assert len(text_encoder_responses) == batch_size
+
+
+def _assert_qwen_image_outputs(result: DataProto, *, batch_size: int, height: int, width: int) -> None:
+    """Validate Qwen-Image diffusion output is a batched RGB image tensor."""
+    responses = result.batch["responses"]
+    _assert_non_empty_tensor(responses, "responses")
+    assert responses.shape == (batch_size, 3, height, width), (
+        f"Expected responses shape {(batch_size, 3, height, width)}, got {tuple(responses.shape)}"
+    )
+    assert torch.isfinite(responses).all(), "Generated image tensor contains non-finite values"
+    assert responses.min() >= 0.0 and responses.max() <= 1.0, (
+        f"Generated image pixels should be in [0, 1], got [{responses.min():.4f}, {responses.max():.4f}]"
+    )
+
+
 def _create_tp_compatible_model(parent_dir, src_model_path, num_attention_heads=2):
     """Copy base model and recreate transformer on-the-fly with TP-compatible head count.
 
@@ -38,20 +72,10 @@ def _create_tp_compatible_model(parent_dir, src_model_path, num_attention_heads=
     model directory (vae, text_encoder, tokenizer, scheduler) and overwrites only the
     transformer component with a freshly-initialized one that has the desired head count.
     """
-    # from transformers import Qwen2_5_VLForConditionalGeneration
     from diffusers import QwenImageTransformer2DModel
 
     dst = os.path.join(parent_dir, "Qwen-Image")
     shutil.copytree(src_model_path, dst)
-    # text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    #     src_model_path,
-    #     subfolder="text_encoder" if self.model_config.config_path else self.model_config.transformer_subfolder)
-    
-    #         tokenizer = hf_tokenizer(
-    #             tokenizer_path, trust_remote_code=self.trust_remote_code, use_fast=True
-    #         )
-    
-    # processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
     transformer = QwenImageTransformer2DModel(
         num_attention_heads=num_attention_heads,
         attention_head_dim=32,
@@ -80,7 +104,6 @@ def init_config(request) -> DictConfig:
     with tempfile.TemporaryDirectory() as tmp_dir:
         model_path = _create_tp_compatible_model(tmp_dir, base_model_path, num_attention_heads=attention_heads)
         config.actor_rollout_ref.model.path = model_path
-        config.actor_rollout_ref.model.text_encoder_path = os.path.join(model_path, "text_encoder")
         config.actor_rollout_ref.model.tokenizer_path = os.path.join(model_path, "tokenizer")
         config.actor_rollout_ref.rollout.name = "vllm_omni"
         config.actor_rollout_ref.rollout.mode = "async"
@@ -94,7 +117,7 @@ def init_config(request) -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
         config.actor_rollout_ref.rollout.calculate_log_probs = True
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
-        config.actor_rollout_ref.rollout.agent.default_agent_loop = "diffusion_single_turn_agent"
+        config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
         tokenizer_max_length = 1024
         prompt_template_encode_start_idx = 34
         max_length = tokenizer_max_length + prompt_template_encode_start_idx
@@ -126,6 +149,7 @@ def init_config(request) -> DictConfig:
 
 
 def test_single_turn(init_config):
+    """Smoke-test CompositeAgentLoopWorker end-to-end on Qwen-Image."""
     ray.init(
         runtime_env={
             "env_vars": {
@@ -144,10 +168,13 @@ def test_single_turn(init_config):
         )
 
         system_prompt = (
-            "Describe the image by detailing the color, shape, size, texture, quantity, text, "
-            "spatial relationships of the objects and background:"
+            "Describe the image by detailing the color, shape, size, texture, "
+            "quantity, text, spatial relationships of the objects and background:"
         )
-        user_prompts = ["Generate a traffic light where none of the lights are green.", "A fruit basket containing only apples, no oranges."]
+        user_prompts = [
+            "Generate a traffic light where none of the lights are green.",
+            "A fruit basket containing only apples, no oranges.",
+        ]
 
         raw_prompts = []
         for user_prompt in user_prompts:
@@ -179,7 +206,8 @@ def test_single_turn(init_config):
         batch = batch.repeat(n)
         batch.meta_info["global_steps"] = 0
         result = agent_loop_manager.generate_sequences(prompts=batch)
-        assert len(result) == len(raw_prompts) * n
+        batch_size = len(raw_prompts) * n
+        assert len(result) == batch_size
 
         expected_batch_keys = [
             "responses",
@@ -187,16 +215,28 @@ def test_single_turn(init_config):
             "all_timesteps",
             "prompt_embeds",
             "prompt_embeds_mask",
+            "negative_prompt_embeds",
+            "negative_prompt_embeds_mask",
             "rollout_log_probs",
+            "rollout_llm_log_probs",
         ]
+        expected_non_tensor_batch_keys = ["text_encoder_responses"]
         for key in expected_batch_keys:
             assert key in result.batch, f"Key {key} not found in result batch with keys {list(result.batch.keys())}."
 
-        # check turns
+        for key in expected_non_tensor_batch_keys:
+            assert key in result.non_tensor_batch, (
+                f"Key {key} not found in result non-tensor batch with keys {list(result.non_tensor_batch.keys())}."
+            )
+
+        height = init_config.actor_rollout_ref.rollout.pipeline.height
+        width = init_config.actor_rollout_ref.rollout.pipeline.width
+
+        _assert_text_encoder_outputs(result, batch_size=batch_size, max_token_len=256)
+        _assert_qwen_image_outputs(result, batch_size=batch_size, height=height, width=width)
+
         num_turns = result.non_tensor_batch["__num_turns__"]
         assert np.all(num_turns == 2)
-
-        print("Test passed!")
     finally:
         ray.shutdown()
         gc.collect()
