@@ -16,15 +16,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import torch
-from verl_omni.pipelines.qwen_image_flow_grpo.common import coalesce_not_none
 from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.diffusion.worker.request_batch import DiffusionRequestBatch
 
 from verl_omni.pipelines.model_base import VllmOmniPipelineBase
+from verl_omni.pipelines.qwen_image_flow_grpo.common import build_img_shapes, coalesce_not_none
 from verl_omni.pipelines.qwen_image_flow_grpo.vllm_omni_rollout_adapter import QwenImagePipelineWithLogProb
 from verl_omni.pipelines.request_batch import (
     collate_prompt_mask as _collate_prompt_mask,
@@ -36,13 +37,13 @@ from verl_omni.pipelines.request_batch import (
     sample_per_sample_sde_windows as _sample_per_sample_sde_windows,
 )
 
-from verl_omni.pipelines.qwen_image_flow_grpo.common import build_img_shapes, coalesce_not_none
-
 __all__ = ["QwenImagePipelineWithDualLogProb"]
 
 
+@dataclass
 class TextEncoderGenerationResult:
     """Autoregressive text-encoder generation results."""
+
     llm_response_ids: torch.Tensor
     llm_log_probs: torch.Tensor | None
     text_encoder_responses: list[str]
@@ -70,7 +71,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         prompt_ids: torch.Tensor,
         attention_mask: torch.Tensor | None,
         return_logprobs: bool = True,
-        llm_kwargs: dict[str, Any] = {}
+        llm_kwargs: dict[str, Any] = None,
     ):
         outputs = self.text_encoder.generate(
             input_ids=prompt_ids.to(self.device),
@@ -81,17 +82,17 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         )
         if return_logprobs:
             logits = outputs.logits
-            logits = torch.stack(logits, dim=1) # B x gen_seq_len x vocab_size
+            logits = torch.stack(logits, dim=1)  # B x gen_seq_len x vocab_size
             logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
         else:
             logprobs = None
         output_ids = outputs.sequences
-        output_ids = output_ids[:, prompt_ids.shape[1]:] # remove prompt prefix
+        output_ids = output_ids[:, prompt_ids.shape[1] :]  # remove prompt prefix
         output_texts = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
 
         return TextEncoderGenerationResult(
             llm_response_ids=output_ids,
-            llm_log_probs = logprobs,
+            llm_log_probs=logprobs,
             text_encoder_responses=output_texts,
         )
 
@@ -102,7 +103,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         num_responses_per_prompt: int = 1,
         return_logprobs: bool = True,
         dtype: torch.dtype | None = None,
-        llm_kwargs: dict[str, Any] = {}
+        llm_kwargs: dict[str, Any] = None,
     ):
         """Text encoder response generation.
 
@@ -137,7 +138,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         text_encoder_responses: list[str] = []
         for _ in range(num_responses_per_prompt):
             response = self._get_qwen_text_response(
-                input_ids=prompt_ids,
+                prompt_ids=prompt_ids,
                 attention_mask=attention_mask,
                 return_logprobs=return_logprobs,
                 llm_kwargs=llm_kwargs,
@@ -147,14 +148,15 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
                 llm_all_log_probs.append(response.llm_log_probs)
             text_encoder_responses.extend(response.text_encoder_responses)
 
-        llm_response_ids = torch.cat(llm_response_ids, dim=0) # B*num_responses_per_prompt x input_len+gen_seq_len
+        llm_response_ids = torch.cat(llm_response_ids, dim=0)  # B*num_responses_per_prompt x input_len+gen_seq_len
         if return_logprobs:
-            llm_all_log_probs = torch.cat(llm_all_log_probs, dim=0) # ，B*num_responses_per_prompt x gen_seq_len x vacab_size
+            llm_all_log_probs = torch.cat(
+                llm_all_log_probs, dim=0
+            )  # ，B*num_responses_per_prompt x gen_seq_len x vacab_size
         else:
             llm_all_log_probs = None
 
         return llm_response_ids, llm_all_log_probs, text_encoder_responses
-
 
     def forward(
         self,
@@ -185,8 +187,11 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         sde_window_range: tuple[int, int] = (0, 5),
         sde_type: Literal["sde", "cps"] = "sde",
         logprobs: bool = True,
-        max_new_tokens: int = 256, # llm max new tokens
-        llm_logprobs: bool = True, # calculate llm logprobs
+        max_new_tokens: int = 256,  # llm max new tokens
+        llm_logprobs: bool = True,  # calculate llm logprobs
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
     ) -> DiffusionOutput | list[DiffusionOutput]:
         """End-to-end text generation and image generation with rollout data collection.
 
@@ -383,12 +388,13 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             latents = latents / latents_std + latents_mean
             image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
-
         # LLM generation
         llm_logprobs = coalesce_not_none(sampling_params.extra_args.get("llm_logprobs", None), llm_logprobs)
-        temperature = coalesce_not_none(sampling_params.extra_args.get("temperature", 1.0), temperature)
-        top_p = coalesce_not_none(sampling_params.extra_args.get("top_p", 1.0), top_p)
-        top_k = coalesce_not_none(sampling_params.extra_args.get("top_k", 0.0), top_k)
+        temperature = coalesce_not_none(sampling_params.extra_args.get("temperature", None), temperature)
+        top_p = coalesce_not_none(sampling_params.extra_args.get("top_p", None), top_p)
+        top_k = int(coalesce_not_none(sampling_params.extra_args.get("top_k", None), top_k))
+        max_new_tokens = int(coalesce_not_none(sampling_params.extra_args.get("max_new_tokens", None), max_new_tokens))
+
         llm_kwargs = dict(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
@@ -398,7 +404,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         llm_response_ids, llm_all_log_probs, text_encoder_responses = self.generate_text_encoder_response(
             prompt_ids=prompt_token_ids,
             attention_mask=prompt_mask,
-            num_responses_per_prompt=num_images_per_prompt, # reused for num responses per prompt in LLM generation
+            num_responses_per_prompt=num_images_per_prompt,  # reused for num responses per prompt in LLM generation
             return_logprobs=llm_logprobs,
             llm_kwargs=llm_kwargs,
         )

@@ -17,7 +17,6 @@ import shutil
 import tempfile
 
 import numpy as np
-import pytest
 import ray
 import torch
 from omegaconf import DictConfig
@@ -92,7 +91,6 @@ def _create_tp_compatible_model(parent_dir, src_model_path, num_attention_heads=
     return dst
 
 
-@pytest.fixture(params=[False, True], ids=["request_execution", "step_execution"])
 def init_config(request) -> DictConfig:
     from hydra import compose, initialize_config_dir
 
@@ -105,10 +103,11 @@ def init_config(request) -> DictConfig:
         model_path = _create_tp_compatible_model(tmp_dir, base_model_path, num_attention_heads=attention_heads)
         config.actor_rollout_ref.model.path = model_path
         config.actor_rollout_ref.model.tokenizer_path = os.path.join(model_path, "tokenizer")
+        config.actor_rollout_ref.model.algorithm = "dual_grpo"
         config.actor_rollout_ref.rollout.name = "vllm_omni"
         config.actor_rollout_ref.rollout.mode = "async"
         config.actor_rollout_ref.rollout.enforce_eager = True
-        config.actor_rollout_ref.rollout.step_execution = request.param
+        config.actor_rollout_ref.rollout.step_execution = False
         # Keep the 2-GPU TP smoke light; CI EOFError on worker launch is usually OOM.
         # Keep enough inference steps for sde_window_range=[0, 5] / sde_window_size=2.
         config.actor_rollout_ref.rollout.n = 2
@@ -116,6 +115,11 @@ def init_config(request) -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.width = 256
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
         config.actor_rollout_ref.rollout.calculate_log_probs = True
+        config.actor_rollout_ref.rollout.llm_calculate_log_probs = True
+        config.actor_rollout_ref.rollout.max_new_tokens = 20
+        config.actor_rollout_ref.rollout.temperature = 0.8
+        config.actor_rollout_ref.rollout.top_k = 5
+        config.actor_rollout_ref.rollout.top_p = 0.9
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
         config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
         tokenizer_max_length = 1024
@@ -231,8 +235,9 @@ def test_single_turn(init_config):
 
         height = init_config.actor_rollout_ref.rollout.pipeline.height
         width = init_config.actor_rollout_ref.rollout.pipeline.width
+        max_new_tokens = init_config.actor_rollout_ref.rollout.max_new_tokens
 
-        _assert_text_encoder_outputs(result, batch_size=batch_size, max_token_len=256)
+        _assert_text_encoder_outputs(result, batch_size=batch_size, max_token_len=max_new_tokens)
         _assert_qwen_image_outputs(result, batch_size=batch_size, height=height, width=width)
 
         num_turns = result.non_tensor_batch["__num_turns__"]

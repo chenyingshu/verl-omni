@@ -126,7 +126,6 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
         return output
 
 
-
 @register("composite_single_turn_agent")
 class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
     """Agent loop for diffusion model serving."""

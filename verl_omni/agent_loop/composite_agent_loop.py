@@ -13,9 +13,12 @@
 # limitations under the License.
 """
 
-Composite agent framework for multi-stage visual generation by AR (LLM/MLLM) + DiT composite architecture, as well as for agentic RL.
+Composite agent framework for multi-stage visual generation by
+AR (LLM/MLLM) + DiT composite architecture, as well as for agentic RL.
 
-- CompositeAgentLo
+- CompositeAgentLoopWorker extends DiffusionAgentLoopWorker with:
+  - a reward handle for AR part
+  - extra returns from AR generation, e.g., reward score and token-level log-probs.
 
 """
 
@@ -23,30 +26,20 @@ import asyncio
 import random
 from typing import Any, Optional
 
-import hydra
 import numpy as np
 import ray
 import torch
 import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from pydantic import ConfigDict
 from tensordict import TensorDict
 from verl.base_config import BaseConfig
-from verl.experimental.agent_loop.agent_loop import (
-    AgentLoopMetrics,
-    DictConfigWrap,
-    _agent_loop_registry,
-)
-from verl.experimental.agent_loop.utils import resolve_config_path
 from verl.protocol import DataProto
-from verl.utils.config import omega_conf_to_dataclass
-from verl.utils.dataset.rl_dataset import get_dataset_class
 from verl.utils.profiler import simple_timer
 from verl.workers.rollout.llm_server import LLMServerClient
 
 from verl_omni.agent_loop.diffusion_agent_loop import DiffusionAgentLoopOutput, DiffusionAgentLoopWorker
 from verl_omni.agent_loop.utils import maybe_per_rollout_seeds
-from verl_omni.workers.config import DiffusionModelConfig, DiffusionRolloutConfig
 
 
 def _config_to_sampling_dict(config: Optional[BaseConfig]) -> dict:
@@ -58,12 +51,8 @@ def _config_to_sampling_dict(config: Optional[BaseConfig]) -> dict:
 class CompositeAgentLoopOutput(DiffusionAgentLoopOutput):
     """Agent loop output. Supplement additional fields for AR part."""
 
-    # llm_response_ids: list[int]
-    # """Response token ids including input prompt and LLM generated tokens."""
-    llm_response_logprobs: Optional[list[float]] = None
+    llm_response_logprobs: Optional[Any] = None
     """Log probabilities for the response tokens."""
-    # llm_refined_prompts: Optional[str] = None
-    # """Refined prompts for the LLM."""
     llm_reward_score: Optional[float] = None
     """Reward score for the semantic reward."""
 
@@ -72,8 +61,19 @@ class _InternalCompositeAgentLoopOutput(CompositeAgentLoopOutput):
     """Internal agent loop output with padded sequences.
     Supplement additional fields for AR part.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    prompt_ids: torch.Tensor
+    """Padded prompt token ids."""
+    response_diffusion_output: torch.Tensor
+    """Response diffusion output: image (NCHW format) / video (NTCHW format)."""
     llm_response_logprobs: Optional[torch.Tensor] = None
     """Log probabilities for the response tokens."""
+    response_logprobs: Optional[torch.Tensor] = None
+    """Log probabilities over denoising timesteps."""
+    extra_fields: dict[str, Any] = {}
+    """Extra fields for dynamic addition."""
 
 
 class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
@@ -136,6 +136,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             "top_k": config.top_k,
             "repetition_penalty": 1.0,
             "llm_logprobs": config.llm_calculate_log_probs,
+            "max_new_tokens": config.max_new_tokens,
         }
 
         is_validate = batch.meta_info.get("validate", False)
@@ -198,7 +199,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         # It is not used in training for now, but we keep it for future use.
         # For example, we can compose common LLM and T2I models for this rollout pipeline and training,
         # where LLM generated refined pompts used for T2I model image generation.
-        extra_fields["refined_prompt"] = output.text_encoder_responses
+        extra_fields["refined_prompt"] = output.extra_fields["text_encoder_responses"]
 
         prompt_output = self.tokenizer.pad(
             {"input_ids": output.prompt_ids},
@@ -253,8 +254,9 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         enable_async_reward = self.reward_loop_worker_handles is not None
         ar_enable_async_reward = self.ar_reward_loop_worker_handles is not None
 
-        if (output.reward_score is None and enable_async_reward) or \
-            (output.llm_reward_score is None and ar_enable_async_reward):
+        if (output.reward_score is None and enable_async_reward) or (
+            output.llm_reward_score is None and ar_enable_async_reward
+        ):
             timing = {}
             with simple_timer("compute_score", timing):
                 batch = TensorDict(

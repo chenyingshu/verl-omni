@@ -618,7 +618,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
 
         if sampling_params.get("llm_logprobs", False):
             llm_all_log_probs = custom_output.get("llm_all_log_probs")
-            llm_log_probs = llm_all_log_probs[0] if all_log_probs is not None else None
+            llm_log_probs = llm_all_log_probs[0] if llm_all_log_probs is not None else None
         else:
             llm_log_probs = None
 
