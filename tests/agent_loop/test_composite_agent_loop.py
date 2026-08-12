@@ -17,6 +17,7 @@ import shutil
 import tempfile
 
 import numpy as np
+import pytest
 import ray
 import torch
 from omegaconf import DictConfig
@@ -27,6 +28,34 @@ from verl.workers.rollout.llm_server import LLMServerManager
 from verl_omni.agent_loop.composite_agent_loop import CompositeAgentLoopWorker
 
 from ..utils.gpu_test_topology import resolve_diffusion_agent_loop_gpu_topology
+
+
+class _FakeRemoteComputeScore:
+    def __init__(self):
+        self.received_data: DataProto | None = None
+
+    async def remote(self, data: DataProto) -> dict:
+        self.received_data = data
+        return {"reward_score": 1.0, "reward_extra_info": {"dit_msg": "dummy_dit_reward_info"}}
+
+
+class _FakeARRemoteComputeScore:
+    def __init__(self):
+        self.received_data: DataProto | None = None
+
+    async def remote(self, data: DataProto) -> dict:
+        self.received_data = data
+        return {"reward_score": 1.0, "reward_extra_info": {"ar_msg": "dummy_ar_reward_info"}}
+
+
+class _FakeRewardLoopWorkerHandle:
+    def __init__(self):
+        self.compute_score = _FakeRemoteComputeScore()
+
+
+class _FakeARRewardLoopWorkerHandle:
+    def __init__(self):
+        self.compute_score = _FakeARRemoteComputeScore()
 
 
 def _assert_non_empty_tensor(value, field_name: str) -> None:
@@ -91,7 +120,8 @@ def _create_tp_compatible_model(parent_dir, src_model_path, num_attention_heads=
     return dst
 
 
-def init_config(request) -> DictConfig:
+@pytest.fixture
+def init_config() -> DictConfig:
     from hydra import compose, initialize_config_dir
 
     with initialize_config_dir(config_dir=os.path.abspath("verl_omni/trainer/config")):
@@ -103,7 +133,7 @@ def init_config(request) -> DictConfig:
         model_path = _create_tp_compatible_model(tmp_dir, base_model_path, num_attention_heads=attention_heads)
         config.actor_rollout_ref.model.path = model_path
         config.actor_rollout_ref.model.tokenizer_path = os.path.join(model_path, "tokenizer")
-        config.actor_rollout_ref.model.algorithm = "dual_grpo"
+        config.actor_rollout_ref.model.algorithm = "dual_grpo"  # change rollout pipeline
         config.actor_rollout_ref.rollout.name = "vllm_omni"
         config.actor_rollout_ref.rollout.mode = "async"
         config.actor_rollout_ref.rollout.enforce_eager = True
@@ -115,11 +145,11 @@ def init_config(request) -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.width = 256
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
         config.actor_rollout_ref.rollout.calculate_log_probs = True
-        config.actor_rollout_ref.rollout.llm_calculate_log_probs = True
-        config.actor_rollout_ref.rollout.max_new_tokens = 20
-        config.actor_rollout_ref.rollout.temperature = 0.8
-        config.actor_rollout_ref.rollout.top_k = 5
-        config.actor_rollout_ref.rollout.top_p = 0.9
+        config.actor_rollout_ref.rollout.llm_calculate_log_probs = True  # new
+        config.actor_rollout_ref.rollout.max_new_tokens = 20  # new
+        config.actor_rollout_ref.rollout.temperature = 0.8  # new
+        config.actor_rollout_ref.rollout.top_k = 5  # new
+        config.actor_rollout_ref.rollout.top_p = 0.9  # new
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
         config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
         tokenizer_max_length = 1024
@@ -152,7 +182,8 @@ def init_config(request) -> DictConfig:
         yield config
 
 
-def test_single_turn(init_config):
+@pytest.mark.parametrize("agent_reward_loop", [False, True])
+def test_single_turn(init_config, agent_reward_loop: bool):
     """Smoke-test CompositeAgentLoopWorker end-to-end on Qwen-Image."""
     ray.init(
         runtime_env={
@@ -169,6 +200,9 @@ def test_single_turn(init_config):
         agent_loop_manager = AgentLoopManager.create(
             config=init_config,
             llm_client=llm_server_manager.get_client(),
+            reward_loop_worker_handles=[_FakeRewardLoopWorkerHandle(), _FakeARRewardLoopWorkerHandle()]
+            if agent_reward_loop
+            else None,
         )
 
         system_prompt = (
@@ -225,6 +259,10 @@ def test_single_turn(init_config):
             "rollout_llm_log_probs",
         ]
         expected_non_tensor_batch_keys = ["text_encoder_responses"]
+        if agent_reward_loop:
+            expected_batch_keys += ["rm_scores", "llm_rm_scores"]
+            expected_non_tensor_batch_keys += ["dit_msg", "ar_msg"]
+
         for key in expected_batch_keys:
             assert key in result.batch, f"Key {key} not found in result batch with keys {list(result.batch.keys())}."
 

@@ -99,11 +99,15 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         llm_client: LLMServerClient,
         teacher_client: dict[str, LLMServerClient] | None = None,
         reward_loop_worker_handles: list[ray.actor.ActorHandle] = None,
-        ar_reward_loop_worker_handles: list[ray.actor.ActorHandle] = None,
     ):
-        super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
+        assert reward_loop_worker_handles is None or len(reward_loop_worker_handles) == 2
+        if reward_loop_worker_handles is None:
+            self.ar_reward_loop_worker_handles = None
+        else:
+            self.ar_reward_loop_worker_handles = reward_loop_worker_handles[1:]  # second for llm
+            reward_loop_worker_handles = reward_loop_worker_handles[:1]  # first for dit
 
-        self.ar_reward_loop_worker_handles = ar_reward_loop_worker_handles
+        super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
@@ -284,7 +288,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
                 if output.llm_reward_score is None and ar_enable_async_reward:
                     selected_ar_reward_loop_worker_handle = random.choice(self.ar_reward_loop_worker_handles)
                     result = await selected_ar_reward_loop_worker_handle.compute_score.remote(data)
-                    output.llm_reward_score = result["llm_reward_score"]
+                    output.llm_reward_score = result["reward_score"]
                     if output.extra_fields["reward_extra_info"] is not None:
                         output.extra_fields["reward_extra_info"].update(result["reward_extra_info"])
                     else:
