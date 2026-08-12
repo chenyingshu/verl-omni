@@ -122,8 +122,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             - ``responses``: diffusion output, typically ``[bsz, C, H, W]`` (image)
               or ``[bsz, T, C, H, W]`` (video).
             - ``rm_scores`` (optional): ``[bsz, 2]`` reward model scores for ar and dit part.
+            - ``text_encoder_responses``: ``List[str]``, refined prompts with CoT.
             - ``meta_info``:
-              - ``refined_prompts``: ``List[str]``, refined prompts with CoT.
               - ``metrics``: ``List[dict]``, per-sample agent loop metrics.
               - ``reward_extra_keys`` (optional): ``List[str]``, keys for reward
                 extra info for logging/validation.
@@ -203,7 +203,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         # It is not used in training for now, but we keep it for future use.
         # For example, we can compose common LLM and T2I models for this rollout pipeline and training,
         # where LLM generated refined pompts used for T2I model image generation.
-        extra_fields["refined_prompt"] = output.extra_fields["text_encoder_responses"]
+        extra_fields["text_encoder_responses"] = output.extra_fields["text_encoder_responses"]
 
         prompt_output = self.tokenizer.pad(
             {"input_ids": output.prompt_ids},
