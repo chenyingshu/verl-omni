@@ -11,6 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""
+This test script validates single-turn return of `CompositeAgentLoopWorker`,
+especially returns from LLM part, e.g.,
+`rollout_llm_log_probs`,
+`llm_response_ids`,
+`text_encoder_responses`,
+`llm_rm_scores` (optional)
+"""
+
 import gc
 import os
 import shutil
@@ -151,7 +161,7 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.top_k = 5  # new
         config.actor_rollout_ref.rollout.top_p = 0.9  # new
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
-        config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
+        config.actor_rollout_ref.rollout.agent.default_agent_loop = "diffusion_single_turn_agent"
         tokenizer_max_length = 1024
         prompt_template_encode_start_idx = 34
         max_length = tokenizer_max_length + prompt_template_encode_start_idx

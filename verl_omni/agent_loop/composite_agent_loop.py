@@ -182,7 +182,9 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
 
         return output
 
-    async def _agent_loop_postprocess(self, output, **kwargs) -> _InternalCompositeAgentLoopOutput:
+    async def _agent_loop_postprocess(
+        self, output: CompositeAgentLoopOutput, **kwargs
+    ) -> _InternalCompositeAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
         # Pad extra tensor outputs from vllm-omni (e.g. prompt embeddings).
         extra_fields = {}
@@ -222,8 +224,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         if output.response_logprobs is not None:
             response_logprobs = output.response_logprobs.unsqueeze(0)
         llm_response_logprobs = None
-        if output.llm_response_logprobs is not None:
-            llm_response_logprobs = output.llm_response_logprobs.unsqueeze(0)
+        if output.extra_fields.get("llm_all_log_probs", None) is not None:
+            llm_response_logprobs = output.extra_fields["llm_all_log_probs"].unsqueeze(0)
 
         prompt_ids = prompt_output["input_ids"]
         extra_fields["attention_mask"] = prompt_output["attention_mask"]

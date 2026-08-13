@@ -616,12 +616,6 @@ class vLLMOmniHttpServer(vLLMHttpServer):
         else:
             log_probs = None
 
-        if sampling_params.get("llm_logprobs", False):
-            llm_all_log_probs = custom_output.get("llm_all_log_probs")
-            llm_log_probs = llm_all_log_probs[0] if llm_all_log_probs is not None else None
-        else:
-            llm_log_probs = None
-
         def _maybe_unbatch(value: Any) -> Any:
             if value is None:
                 return None
@@ -633,8 +627,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
                 return value[0] if value else None
             return value
 
-        skip_keys = {"all_log_probs", "llm_all_log_probs"}
-        extra_fields = {k: _maybe_unbatch(v) for k, v in custom_output.items() if k not in skip_keys}
+        extra_fields = {k: _maybe_unbatch(v) for k, v in custom_output.items() if k != "all_log_probs"}
         multimodal_output = final_res.multimodal_output or {}
         if isinstance(multimodal_output, dict):
             for key, value in multimodal_output.items():
@@ -655,7 +648,6 @@ class vLLMOmniHttpServer(vLLMHttpServer):
         return DiffusionOutput(
             diffusion_output=diffusion_output,
             log_probs=log_probs,
-            llm_log_probs=llm_log_probs,
             stop_reason=stop_reason,
             num_preempted=num_preempted,
             extra_fields=extra_fields,

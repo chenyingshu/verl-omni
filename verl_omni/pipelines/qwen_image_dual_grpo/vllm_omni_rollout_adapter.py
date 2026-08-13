@@ -36,6 +36,9 @@ from verl_omni.pipelines.request_batch import (
 from verl_omni.pipelines.request_batch import (
     sample_per_sample_sde_windows as _sample_per_sample_sde_windows,
 )
+from verl_omni.pipelines.request_batch import (
+    split_diffusion_output_by_request as _split_diffusion_output_by_request,
+)
 
 __all__ = ["QwenImagePipelineWithDualLogProb"]
 
@@ -394,12 +397,14 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         top_p = coalesce_not_none(sampling_params.extra_args.get("top_p", None), top_p)
         top_k = int(coalesce_not_none(sampling_params.extra_args.get("top_k", None), top_k))
         max_new_tokens = int(coalesce_not_none(sampling_params.extra_args.get("max_new_tokens", None), max_new_tokens))
+        repetition_penalty = coalesce_not_none(sampling_params.extra_args.get("repetition_penalty", None), 1.0)
 
         llm_kwargs = dict(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            repetition_penalty=repetition_penalty,
         )
         llm_response_ids, llm_all_log_probs, text_encoder_responses = self.generate_text_encoder_response(
             prompt_ids=prompt_token_ids,
@@ -409,7 +414,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             llm_kwargs=llm_kwargs,
         )
 
-        return DiffusionOutput(
+        result = DiffusionOutput(
             output=image,
             custom_output={
                 "all_latents": all_latents,
@@ -425,5 +430,9 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             },
             to_cpu=True,
         )
-
-        # TODO: (susan) _split_composite_output_by_request
+        outputs = _split_diffusion_output_by_request(
+            result,
+            request_batch,
+            num_outputs_per_prompt=num_images_per_prompt,
+        )
+        return outputs if return_batch else outputs[0]

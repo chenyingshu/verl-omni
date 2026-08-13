@@ -259,6 +259,7 @@ llm_calculate_log_probs: False
 temperature: 1.0
 top_k: 0
 top_p: 1.0
+repetition_penalty: 1.0
 
 # Optional. Max number of LLM generated tokens
 max_new_tokens: 256
