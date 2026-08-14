@@ -256,9 +256,17 @@ calculate_log_probs: False
 
 # Optional. LLM generation use
 llm_calculate_log_probs: False
+
+# Optional. LLM generation use
 temperature: 1.0
+
+# Optional. LLM generation use
 top_k: 0
+
+# Optional. LLM generation use
 top_p: 1.0
+
+# Optional. LLM generation use
 repetition_penalty: 1.0
 
 # Optional. Max number of LLM generated tokens
