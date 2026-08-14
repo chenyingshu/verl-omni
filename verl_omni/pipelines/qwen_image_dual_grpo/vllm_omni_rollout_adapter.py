@@ -79,14 +79,12 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         outputs = self.text_encoder.generate(
             input_ids=prompt_ids.to(self.device),
             attention_mask=attention_mask.to(self.device),
-            return_dict_in_generate=True,
-            output_logits=return_logprobs,
+            output_scores=return_logprobs,
             **llm_kwargs,
         )
         if return_logprobs:
-            logits = outputs.logits
-            logits = torch.stack(logits, dim=1)  # B x gen_seq_len x vocab_size
-            logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+            scores = torch.stack(outputs.scores, dim=1)  # B x gen_seq_len x vocab_size
+            logprobs = torch.nn.functional.log_softmax(scores, dim=-1)
         else:
             logprobs = None
         output_ids = outputs.sequences
