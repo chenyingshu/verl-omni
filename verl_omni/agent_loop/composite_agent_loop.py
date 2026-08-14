@@ -183,9 +183,11 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         return output
 
     async def _agent_loop_postprocess(
-        self, output: CompositeAgentLoopOutput, **kwargs
+        self, output: DiffusionAgentLoopOutput, **kwargs
     ) -> _InternalCompositeAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
+        output = CompositeAgentLoopOutput(**dict(output))
+
         # Pad extra tensor outputs from vllm-omni (e.g. prompt embeddings).
         extra_fields = {}
         for k, v in output.extra_fields.items():
