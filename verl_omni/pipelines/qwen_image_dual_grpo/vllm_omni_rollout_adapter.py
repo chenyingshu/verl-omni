@@ -79,6 +79,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         outputs = self.text_encoder.generate(
             input_ids=prompt_ids.to(self.device),
             attention_mask=attention_mask.to(self.device),
+            return_dict_in_generate=True,
             output_scores=return_logprobs,
             **llm_kwargs,
         )
