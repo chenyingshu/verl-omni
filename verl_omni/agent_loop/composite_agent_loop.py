@@ -138,7 +138,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             "temperature": config.temperature,
             "top_p": config.top_p,
             "top_k": config.top_k,
-            "repetition_penalty": 1.0,
+            "repetition_penalty": config.repetition_penalty,
             "llm_logprobs": config.llm_calculate_log_probs,
             "max_new_tokens": config.max_new_tokens,
         }
