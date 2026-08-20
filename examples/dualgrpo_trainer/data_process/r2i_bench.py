@@ -26,21 +26,17 @@ Usage::
 import argparse
 import os
 
-from datasets import load_dataset, concatenate_datasets
+from datasets import concatenate_datasets, load_dataset
 
 category_subcategory_list = [
-
     {"category": "commonsense", "subcategory": "social_cultural_knowledge_object"},
     {"category": "commonsense", "subcategory": "temporal_understanding"},
     {"category": "commonsense", "subcategory": "social_cultural_knowledge_scene"},
-
     {"category": "compositional", "subcategory": "creative_compositional"},
     {"category": "compositional", "subcategory": "inferential_spatial"},
     {"category": "compositional", "subcategory": "prescriptive_spatial"},
-
     {"category": "concept_mixing", "subcategory": "functional_mixing"},
     {"category": "concept_mixing", "subcategory": "literal_mixing"},
-
     {"category": "logical", "subcategory": "abductive"},
     {"category": "logical", "subcategory": "categorical"},
     {"category": "logical", "subcategory": "conjunctive"},
@@ -48,11 +44,9 @@ category_subcategory_list = [
     {"category": "logical", "subcategory": "disjunctive"},
     {"category": "logical", "subcategory": "hypothetical"},
     {"category": "logical", "subcategory": "sufficient_conditional"},
-
     {"category": "numerical", "subcategory": "approximate_number_generation"},
     {"category": "numerical", "subcategory": "conceptual_quantitative"},
     {"category": "numerical", "subcategory": "exact_number_generation"},
-
     {"category": "mathematical", "subcategory": "combinatorial"},
     {"category": "mathematical", "subcategory": "cryptographic_encoding"},
     {"category": "mathematical", "subcategory": "geometrical_transformations"},
@@ -61,7 +55,6 @@ category_subcategory_list = [
     {"category": "mathematical", "subcategory": "spatial_reasoning"},
     {"category": "mathematical", "subcategory": "vector_matrix_visualization"},
     {"category": "mathematical", "subcategory": "set_theory"},
-
     {"category": "causal", "subcategory": "cause_to_effect"},
     {"category": "causal", "subcategory": "effect_to_cause"},
 ]
@@ -72,9 +65,12 @@ SYSTEM_PROMPT = (
     " Your core task is to rewrite user-provided prompts into highly clear, easy-to-render versions.\n"
     "When rewriting, prioritize the following principles:\n"
     "1. Start from the user's prompt, do reasoning step by step to analyze the object or scene they want to generate.\n"
-    "2. Focus on describing the final visual appearance of the scene. Clarify elements like the main subject’s shape, color, and state.\n"
-    "3. If you are confident about what the user wants to generate, directly point it out in your explanation and the final revised prompt.\n"
-    "4. If technical concepts are necessary but difficult for ordinary users to understand, translate them into intuitive visual descriptions.\n"
+    "2. Focus on describing the final visual appearance of the scene. "
+    "Clarify elements like the main subject’s shape, color, and state.\n"
+    "3. If you are confident about what the user wants to generate, "
+    "directly point it out in your explanation and the final revised prompt.\n"
+    "4. If technical concepts are necessary but difficult for ordinary users to understand, "
+    "translate them into intuitive visual descriptions.\n"
     "5. Ensure the final revised prompt is consistent with the user's intent.\n\n"
     "After receiving the user’s prompt that needs rewriting, first explain your reasoning for optimization. "
     'Then, output the final revised prompt in the fixed format of "Revised Prompt:\n". '
@@ -109,7 +105,6 @@ if __name__ == "__main__":
             "Please get dataset from https://github.com/PLUM-Lab/R2I-Bench/tree/main/data/prompts"
         )
 
-
     # load all csv files
     train_datasets_to_merge = []
     test_datasets_to_merge = []
@@ -122,7 +117,7 @@ if __name__ == "__main__":
         if not os.path.exists(csv_path):
             print(f"File does not exist: {csv_path}")
             continue
-        sub_dataset = load_dataset("csv", data_files = csv_path)
+        sub_dataset = load_dataset("csv", data_files=csv_path)
 
         # make sure split with same ratio for each subcategory
         # deterministic split with shuffle=False (easy for debug)
@@ -134,7 +129,6 @@ if __name__ == "__main__":
     # Merge the train and test sets
     train_dataset = concatenate_datasets(train_datasets_to_merge)
     test_dataset = concatenate_datasets(test_datasets_to_merge)
-
 
     # Prepare data format
     data_source = "r2i_bench"
