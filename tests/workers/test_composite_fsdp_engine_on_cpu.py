@@ -21,12 +21,14 @@ layout, and Dual-GRPO batch-size relationships.
 from __future__ import annotations
 
 import os
+import tempfile
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
 from tensordict import TensorDict
+from transformers import Qwen2_5_VLConfig
 from verl.workers.engine.base import BaseEngine
 
 from verl_omni.workers.config.diffusion.model import DiffusionModelARConfig, DiffusionModelConfig
@@ -35,12 +37,11 @@ from verl_omni.workers.engine.fsdp.diffusers_impl import CompositeFSDPEngine, _C
 from .test_composite_fsdp_engine import create_ar_infer_batch, create_ar_train_batch
 
 ROLLOUT_N = 2
-ROLLOUT_M = 2
+ROLLOUT_M = 4
 
 
 def _make_diffusion_model_config(**ar_overrides) -> DiffusionModelConfig:
     cfg = object.__new__(DiffusionModelConfig)
-    object.__setattr__(cfg, "local_path", "/fake/models/qwen-image")
     object.__setattr__(cfg, "text_encoder_subfolder", "text_encoder")
     object.__setattr__(cfg, "trust_remote_code", False)
     object.__setattr__(cfg, "ar", DiffusionModelARConfig(**ar_overrides))
@@ -95,7 +96,10 @@ class TestCompositeEngineRegistry:
         assert "diffusion_composite_model" in init_model_src
 
 
-class TestBuildArHfModelConfig:
+class TestBuildARHfModelConfig:
+    config = Qwen2_5_VLConfig(architectures=["Qwen2_5_VLForConditionalGeneration"])
+    tmp_dir = tempfile.mkdtemp(prefix="composite_fsdp_engine_cpu_")
+
     def test_points_at_text_encoder_subfolder(self):
         engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
         dm_cfg = _make_diffusion_model_config(
@@ -103,10 +107,12 @@ class TestBuildArHfModelConfig:
             lora_rank=8,
             lora_alpha=16,
         )
-
+        object.__setattr__(dm_cfg, "local_path", self.tmp_dir)
+        local_te_dir = os.path.join(self.tmp_dir, "text_encoder")
+        self.config.save_pretrained(local_te_dir)
         hf_cfg = engine.build_ar_hf_model_config(dm_cfg)
 
-        assert hf_cfg.path == os.path.join("/fake/models/qwen-image", "text_encoder")
+        assert hf_cfg.path == local_te_dir
         assert hf_cfg.load_tokenizer is False
         assert hf_cfg.override_config == {"attn_implementation": "sdpa"}
         assert hf_cfg.lora_rank == 8
@@ -115,11 +121,14 @@ class TestBuildArHfModelConfig:
     def test_respects_custom_text_encoder_subfolder(self):
         engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
         dm_cfg = _make_diffusion_model_config()
+        object.__setattr__(dm_cfg, "local_path", self.tmp_dir)
         object.__setattr__(dm_cfg, "text_encoder_subfolder", "custom_te")
+        local_te_dir = os.path.join(self.tmp_dir, "custom_te")
+        self.config.save_pretrained(local_te_dir)
 
         hf_cfg = engine.build_ar_hf_model_config(dm_cfg)
 
-        assert hf_cfg.path == os.path.join("/fake/models/qwen-image", "custom_te")
+        assert hf_cfg.path == local_te_dir
 
 
 class TestNextStage:
@@ -142,7 +151,7 @@ class TestNextStage:
         assert engine.current_engine is engine.ar_engine
 
 
-class TestDualGrpoBatchSizes:
+class TestDualGRPOBatchSizes:
     def test_ar_and_dit_batch_sizes_differ(self):
         ar_batch_size, dit_batch_size = _dual_grpo_batch_sizes(device_count=2)
         assert ar_batch_size == ROLLOUT_M * 2
@@ -151,7 +160,7 @@ class TestDualGrpoBatchSizes:
 
     def test_ar_infer_batch_matches_rollout_m(self):
         ar_batch_size, _ = _dual_grpo_batch_sizes(device_count=1)
-        batch = create_ar_infer_batch(ar_batch_size)
+        batch = create_ar_infer_batch(ar_batch_size, micro_batch_size_per_gpu=2)
         assert batch.batch_size[0] == ar_batch_size
 
     def test_dit_infer_batch_matches_rollout_n_times_ar(self):
@@ -179,7 +188,7 @@ class TestInferBatchStageSwitching:
     def test_infer_batch_routes_ar_then_dit_like_trainer(self):
         engine = _make_composite_engine()
         ar_batch_size, dit_batch_size = _dual_grpo_batch_sizes(device_count=1)
-        ar_data = create_ar_infer_batch(ar_batch_size)
+        ar_data = create_ar_infer_batch(ar_batch_size, micro_batch_size_per_gpu=2)
         dit_data = TensorDict({"old_log_probs": torch.zeros(dit_batch_size, 10)}, batch_size=dit_batch_size)
 
         with _patch_base_engine_method("infer_batch") as mock_infer:
@@ -188,13 +197,13 @@ class TestInferBatchStageSwitching:
             assert engine.current_engine is engine.ar_engine
             ar_out = engine.infer_batch(ar_data, loss_function=None)
             assert ar_out == {"log_probs": torch.zeros(1)}
-            mock_infer.assert_called_once_with(ar_data, loss_function=None)
+            mock_infer.assert_called_once_with(ar_data, None)
             assert engine.current_engine is engine.dit_engine
 
             mock_infer.reset_mock()
             dit_out = engine.infer_batch(dit_data, loss_function=None)
-            assert dit_out == {"log_probs": torch.zeros(2)}
-            mock_infer.assert_called_once_with(dit_data, loss_function=None)
+            assert (dit_out["log_probs"] == torch.zeros(2)).all()
+            mock_infer.assert_called_once_with(dit_data, None)
             assert engine.current_engine is engine.ar_engine
 
     def test_infer_batch_delegates_to_current_engine_via_super(self):
@@ -206,7 +215,7 @@ class TestInferBatchStageSwitching:
             mock_infer.return_value = {"ok": True}
             engine.infer_batch(data, loss_function=loss_fn)
 
-        mock_infer.assert_called_once_with(data, loss_function=loss_fn)
+        mock_infer.assert_called_once_with(data, loss_fn)
 
 
 class TestTrainBatchStageSwitching:
@@ -334,9 +343,14 @@ class TestCompositeEngineCtx:
         with ctx:
             assert engine.mode == "train"
             ar_ctx.__enter__.assert_called_once()
-            dit_ctx.__enter__.assert_called_once()
-
         ar_ctx.__exit__.assert_called_once()
+        assert engine.mode is None
+
+        engine.next_stage()
+        ctx = _CompositeEngineCtx(engine, mode="train", disable_auto_offload=True)
+        with ctx:
+            assert engine.mode == "train"
+            dit_ctx.__enter__.assert_called_once()
         dit_ctx.__exit__.assert_called_once()
         assert engine.mode is None
 
@@ -350,7 +364,10 @@ class TestCompositeEngineCtx:
         ctx = _CompositeEngineCtx(engine, mode="eval")
         with ctx:
             engine.ar_engine.eval_mode.assert_called_once_with()
-            engine.dit_engine.eval_mode.assert_called_once_with()
-
         ar_ctx.__exit__.assert_called_once()
+
+        engine.next_stage()
+        ctx = _CompositeEngineCtx(engine, mode="eval")
+        with ctx:
+            engine.dit_engine.eval_mode.assert_called_once_with()
         dit_ctx.__exit__.assert_called_once()

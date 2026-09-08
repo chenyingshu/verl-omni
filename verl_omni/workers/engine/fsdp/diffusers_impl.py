@@ -1694,6 +1694,7 @@ class CompositeFSDPEngine(BaseEngine):
             for name, tensor in ar_params:
                 yield f"text_encoder.{name}", tensor
 
+        # TODO: (susan) merge ar and dit peft dicts
         return merged(), dit_peft or ar_peft
 
     def disable_adapter(self):
