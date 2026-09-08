@@ -35,6 +35,7 @@ import torch
 from tensordict import TensorDict
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
 from verl.utils import tensordict_utils as tu
+from verl.utils.model import create_random_mask
 from verl.workers.config import TrainingWorkerConfig
 from verl.workers.utils.padding import left_right_2_no_padding
 
@@ -86,9 +87,9 @@ def create_composite_training_config(
         "pipeline.true_cfg_scale=4.0",
         "algo.noise_level=1.2",
         "algo.sde_type=sde",
-        "+ar.override_config.attn_implementation=sdpa",  # default is FA2
+        "+ar.override_config.attn_implementation=flash_attention_2",  # default is FA2
+        "use_remove_padding=True",  # AR sp must apply
     ]
-    from verl_omni.utils.diffusion_attention import fa3_available
 
     # if cp > 1 or not fa3_available():
     #     model_overrides.append("attn_backend=native")
@@ -143,15 +144,14 @@ def _create_ar_left_right_batch(
     response_ids = torch.randint(1, 1000, (batch_size, max_response_len))
     input_ids = torch.cat([prompt_ids, response_ids], dim=-1)
 
-    attention_mask = torch.ones(batch_size, max_seq_len).int()
-    attention_mask[:, -max_response_len // 2 :] = 0  # valid len = 91
-    response_mask = torch.zeros(batch_size, max_response_len).int()
-    response_mask[:, : max_response_len // 2] = 1  # valid len = 36
+    attention_mask = create_random_mask(
+        input_ids=input_ids, max_ratio_of_valid_token=0, max_ratio_of_left_padding=0.9, min_ratio_of_valid_token=0.8
+    )
+    response_mask = attention_mask[:, prompt_len:]
 
     # M-RoPE layout expected by ``left_right_2_no_padding``: (batch_size, 4, seq_len).
-    position_ids = (
-        torch.arange(max_seq_len, dtype=torch.long).view(1, 1, -1).expand(batch_size, 4, -1)
-    )  # text&vision position ids
+    position_ids = torch.clip(torch.cumsum(mask, dim=-1) - 1, min=0, max=None).unsqueeze(1).expand(-1, 4, -1)
+    # text&vision position ids
 
     return TensorDict(
         {
@@ -183,9 +183,7 @@ def create_ar_infer_batch(batch_size: int, *, micro_batch_size_per_gpu: int) -> 
 
 
 def create_ar_train_batch(batch_size: int, *, micro_batch_size_per_gpu: int) -> TensorDict:
-    max_seq_len = 128
-    max_response_len = 73
-    batch = _create_ar_left_right_batch(batch_size, max_seq_len=max_seq_len, max_response_len=max_response_len)
+    batch = _create_ar_left_right_batch(batch_size)
     batch = left_right_2_no_padding(batch)
     tu.assign_non_tensor(
         batch,

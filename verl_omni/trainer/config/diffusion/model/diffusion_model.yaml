@@ -79,6 +79,9 @@ lora_dtype: null
 # FSDP layer name prefixes for LoRA parameter layered summon.
 fsdp_layer_prefixes: ["transformer_blocks."]
 
+# AR use only
+use_remove_padding: False
+
 # MTP
 mtp: 
 

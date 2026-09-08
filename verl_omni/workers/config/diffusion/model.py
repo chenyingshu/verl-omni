@@ -108,6 +108,9 @@ class DiffusionModelConfig(BaseConfig):
     # custom chat template for the model
     custom_chat_template: Optional[str] = None
 
+    # AR use only
+    use_remove_padding: bool = False
+
     external_lib: Optional[str] = None
 
     enable_gradient_checkpointing: bool = True
