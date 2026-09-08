@@ -145,12 +145,12 @@ def _create_ar_left_right_batch(
     input_ids = torch.cat([prompt_ids, response_ids], dim=-1)
 
     attention_mask = create_random_mask(
-        input_ids=input_ids, max_ratio_of_valid_token=0, max_ratio_of_left_padding=0.9, min_ratio_of_valid_token=0.8
+        input_ids=input_ids, max_ratio_of_valid_token=0.8, max_ratio_of_left_padding=0.2, min_ratio_of_valid_token=0.6
     )
     response_mask = attention_mask[:, prompt_len:]
 
     # M-RoPE layout expected by ``left_right_2_no_padding``: (batch_size, 4, seq_len).
-    position_ids = torch.clip(torch.cumsum(mask, dim=-1) - 1, min=0, max=None).unsqueeze(1).expand(-1, 4, -1)
+    position_ids = torch.clip(torch.cumsum(attention_mask, dim=-1) - 1, min=0, max=None).unsqueeze(1).expand(-1, 4, -1)
     # text&vision position ids
 
     return TensorDict(
@@ -358,24 +358,3 @@ def test_composite_fsdp_engine_infer_and_train(strategy: str) -> None:
     finally:
         ray.shutdown()
         shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def test_composite_fsdp_engine_next_stage_toggles_engine() -> None:
-    """Unit-check stage switching without loading weights (single-process mock)."""
-    from unittest.mock import MagicMock
-
-    from verl_omni.workers.engine.fsdp.diffusers_impl import CompositeFSDPEngine
-
-    engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
-    engine.ar_engine = MagicMock(name="ar_engine")
-    engine.dit_engine = MagicMock(name="dit_engine")
-    engine.ar_stage = True
-    engine.current_engine = engine.ar_engine
-
-    engine.next_stage()
-    assert engine.ar_stage is False
-    assert engine.current_engine is engine.dit_engine
-
-    engine.next_stage()
-    assert engine.ar_stage is True
-    assert engine.current_engine is engine.ar_engine

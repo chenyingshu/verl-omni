@@ -13,6 +13,7 @@
 # limitations under the License.
 """FSDP engines for diffusion models."""
 
+import functools
 import gc
 import json
 import logging
@@ -1445,6 +1446,52 @@ def qwen2_vl_base_forward(
     return self.language_model(input_ids=None, **kwargs)
 
 
+# Bug in pytorch FSDP2
+# TODO: (susan) remove after the verl fix PR got merged and released or new torch version released::
+# https://github.com/verl-project/verl/pull/7475
+# https://github.com/pytorch/pytorch/pull/194058
+def _guard_fsdp2_accumulated_grad() -> None:
+    """Work around an AttributeError in torch's FSDP2 gradient accumulation.
+
+    `FSDPParam.to_accumulated_grad_if_needed` reads `self._unsharded_param`
+    without checking that it exists. That attribute is created by
+    `init_unsharded_param` (which guards its own access with `hasattr`) and
+    dropped by `free_unsharded_param`, so a parameter that never took part in the
+    forward pass does not have it, and training dies with
+
+        AttributeError: 'FSDPParam' object has no attribute '_unsharded_param'
+
+    Seen on a Qwen3.5 VL model under text-only batches, where the vision tower is
+    never gathered. Such a parameter has no unsharded gradient to upcast, which is
+    the case the method already returns early for, so returning is what it means
+    to do.
+
+    Fixed upstream in pytorch/pytorch#194058. This shim keeps verl working on the
+    torch releases that carry the bug and becomes a no-op once the fix lands: it
+    only inserts an early return for the case that would otherwise raise.
+    """
+    try:
+        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+    except ImportError:
+        return
+
+    original = getattr(FSDPParam, "to_accumulated_grad_if_needed", None)
+    if original is None or getattr(original, "_verl_guarded", False):
+        return
+
+    @functools.wraps(original)
+    def to_accumulated_grad_if_needed(self):
+        if getattr(self, "_unsharded_param", None) is None:
+            return
+        return original(self)
+
+    to_accumulated_grad_if_needed._verl_guarded = True
+    FSDPParam.to_accumulated_grad_if_needed = to_accumulated_grad_if_needed
+
+
+_guard_fsdp2_accumulated_grad()
+
+
 @EngineRegistry.register(model_type="diffusion_composite_model", backend=["fsdp", "fsdp2"], device=["cuda", "npu"])
 class CompositeFSDPEngine(BaseEngine):
     """Composite engine delegating to separate AR and DiT FSDP backends.
@@ -1679,13 +1726,11 @@ class _CompositeEngineCtx:
         self.engine.mode = self.mode
         if self.mode == "train":
             self._subcontexts = [
-                self.engine.ar_engine.train_mode(**self.kwargs),
-                self.engine.dit_engine.train_mode(**self.kwargs),
+                self.engine.current_engine.train_mode(**self.kwargs),
             ]
         else:
             self._subcontexts = [
-                self.engine.ar_engine.eval_mode(**self.kwargs),
-                self.engine.dit_engine.eval_mode(**self.kwargs),
+                self.engine.current_engine.eval_mode(**self.kwargs),
             ]
         for ctx in self._subcontexts:
             ctx.__enter__()
