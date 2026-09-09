@@ -30,7 +30,6 @@ import hydra
 import numpy as np
 import ray
 import torch
-import torch.nn.functional as F
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 from tensordict import TensorDict
@@ -61,29 +60,6 @@ def _config_to_sampling_dict(config: Optional[BaseConfig]) -> dict:
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
 
-def _pad_llm_generation_outputs(
-    response_ids: torch.Tensor,
-    log_probs: torch.Tensor | None,
-    max_new_tokens: int,
-    pad_token_id: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Right-pad per-request AR generation tensors to ``max_new_tokens``.
-
-    Per-request ``generate`` stops at EOS, so samples reach ``_postprocess``
-    with different lengths while it batches them with ``torch.cat``.
-    """
-    gen_len = int(response_ids.shape[-1])
-    if gen_len > max_new_tokens:
-        raise ValueError(f"llm_response_ids length {gen_len} exceeds rollout.max_new_tokens={max_new_tokens}")
-    attention_mask = torch.zeros(*response_ids.shape[:-1], max_new_tokens, dtype=torch.long, device=response_ids.device)
-    attention_mask[..., :gen_len] = 1
-    padded_ids = F.pad(response_ids, (0, max_new_tokens - gen_len), value=pad_token_id)
-    padded_log_probs = None
-    if log_probs is not None:
-        padded_log_probs = F.pad(log_probs, (0, 0, 0, max_new_tokens - log_probs.shape[-2]), value=0.0)
-    return padded_ids, attention_mask, padded_log_probs
-
-
 class ARAgentLoopOutput(BaseModel):
     """Agent loop output."""
 
@@ -91,12 +67,19 @@ class ARAgentLoopOutput(BaseModel):
 
     prompt_ids: list[int]
     """Input ids of raw input prompt"""
+    # output_ids: list[int]
+    # """Output ids of generated response"""
+    # output_mask: torch.Tensor
+    # """Attention mask for padded output tokens (torch.Tensor)."""
+    # output_position_ids: torch.Tensor
+    # """Position ids for padded output tokens (torch.Tensor)."""
     response_ids: Any
     """Full response AR tokens output (torch.Tensor)."""
+    response_mask: Any
+    """Attention mask for padded response tokens (torch.Tensor)."""
     refined_prompt: Any
     """Refined rewritten prompt in chat-message form for diffusion."""
-
-    ar_response_logprobs: Optional[Any] = None
+    ar_response_logprobs: Optional[list[float]] = None
     """Log probabilities for the response tokens."""
     ar_reward_score: Optional[float] = None
     """Reward score for the semantic reward."""
@@ -119,8 +102,16 @@ class _InternalARAgentLoopOutput(ARAgentLoopOutput):
     """Padded prompt token ids."""
     response_ids: torch.Tensor
     """Padded AR response token ids."""
+    input_ids: torch.Tensor
+    """Padded input ids(prompt_ids + response_ids)."""
+    position_ids: torch.Tensor
+    """Padded position ids."""
+    response_mask: torch.Tensor
+    """Padded response mask."""
+    attention_mask: torch.Tensor
+    """Padded attention mask."""
     ar_response_logprobs: Optional[torch.Tensor] = None
-    """Log probabilities for the response tokens."""
+    """Padded log probabilities for the response tokens."""
 
 
 class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
@@ -169,7 +160,11 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             AR ``DataProto`` batch fields (optional keys omitted when disabled):
 
             - ``prompts``: ``[ar_bsz, prompt_length]`` original prompt token ids.
-            - ``response_ids``: ``[ar_bsz, ar_max_new_tokens]`` generated AR tokens.
+            - ``responses``: ``[ar_bsz, ar_response_length]`` padded generated AR tokens.
+            - ``response_mask``: ``[ar_bsz, ar_response_length]`` attention mask for padded response tokens.
+            - ``input_ids``: ``[ar_bsz, prompt_length + ar_response_length]`` padded full response tokens.
+            - ``attention_mask`: ``[ar_bsz, prompt_length + ar_response_length]`` attention mask for input_ids.
+            - ``position_ids``: ``[ar_bsz, 4, prompt_length + ar_response_length]`` M-RoPE 3D position ids for input_ids.
             - ``rollout_ar_log_probs`` (optional): AR token log-probs.
             - ``rm_scores`` (optional): ``[ar_bsz, 1]`` AR reward scores.
 
@@ -275,6 +270,37 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         )
         return await self._agent_loop_postprocess(output, validate=validate, **kwargs)
 
+    def _pad_token_ids(
+        self,
+        tokens: list[int],
+        *,
+        max_length: int,
+        padding_side: str,
+        return_attention_mask: bool,
+    ) -> dict[str, torch.Tensor]:
+        """Right/left pad a flat list of token ids to a ``(1, max_length)`` tensor."""
+        # tokenizer.pad() with empty input returns dict with list values
+        # instead of tensors, which breaks downstream .dim() calls.
+        if not tokens:
+            pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            result = {"input_ids": torch.full((1, max_length), pad_id, dtype=torch.long)}
+            if return_attention_mask:
+                result["attention_mask"] = torch.zeros((1, max_length), dtype=torch.long)
+            return result
+        self.tokenizer.padding_side = padding_side
+        padded = self.tokenizer.pad(
+            {"input_ids": tokens},
+            padding="max_length",
+            max_length=max_length,
+            return_tensors="pt",
+            return_attention_mask=return_attention_mask,
+        )
+        if padded["input_ids"].dim() == 1:
+            padded["input_ids"] = padded["input_ids"].unsqueeze(0)
+            if return_attention_mask:
+                padded["attention_mask"] = padded["attention_mask"].unsqueeze(0)
+        return padded
+
     async def _agent_loop_postprocess(
         self,
         output: tuple[ARAgentLoopOutput, list[DiffusionAgentLoopOutput]],
@@ -308,48 +334,58 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         **kwargs,
     ) -> _InternalARAgentLoopOutput:
         """Post-process a single AR agent-loop output."""
-        response_ids = output.response_ids
-        if not isinstance(response_ids, torch.Tensor):
-            response_ids = torch.as_tensor(response_ids)
-        if response_ids.dim() == 1:
-            response_ids = response_ids.unsqueeze(0)
+
+        # padding for general use
+        # you can pad results during rollout generation
+        # or pad them here for post-processing, depending on your preference
+        # compute input ids (i.e., prompt+response), attention mask, position ids.
+
+        prompt_output = self._pad_token_ids(
+            output.prompt_ids,
+            max_length=self.rollout_config.prompt_length,
+            padding_side="left",
+            return_attention_mask=True,
+        )
+
+        response_output = self._pad_token_ids(
+            output.response_ids,
+            max_length=self.rollout_config.ar.response_length,
+            padding_side="right",
+            return_attention_mask=True,
+        )
+
+        response_mask_output = self._pad_token_ids(
+            output.response_mask,
+            max_length=self.rollout_config.ar.response_length,
+            padding_side="right",
+            return_attention_mask=False,
+        )
+
+        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+
+        # token ids and attention mask forprompt + response
+        attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
+        input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
+
+        # Currently support text-only position ids as 3D position ids.
+        # TODO: (susan) extend to multi-modal 3D position ids for M-RoPE
+        valid_mask = attention_mask[0].bool()
+        text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
+        text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
+        text_position_ids = text_position_ids.unsqueeze(0)  # (1, seq_len)
+        # M-RoPE layout expected by ``left_right_2_no_padding``: B x 4 x seq_len.
+        position_ids = text_position_ids.unsqueeze(1).expand(-1, 4, -1)
 
         ar_response_logprobs = None
         if output.ar_response_logprobs is not None:
             ar_response_logprobs = output.ar_response_logprobs
+            if isinstance(ar_response_logprobs, list):
+                pad_size = self.rollout_config.ar.response_length - len(output.ar_response_logprobs)
+                ar_response_logprobs = torch.tensor(ar_response_logprobs + [0.0] * pad_size).unsqueeze(0)
             if ar_response_logprobs.dim() == 2:
                 ar_response_logprobs = ar_response_logprobs.unsqueeze(0)
 
-        ar_response_mask: torch.Tensor | None = None
-        if isinstance(response_ids, torch.Tensor):
-            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
-            response_ids, ar_response_mask, ar_response_logprobs = _pad_llm_generation_outputs(
-                response_ids,
-                ar_response_logprobs if isinstance(ar_response_logprobs, torch.Tensor) else None,
-                self.rollout_config.max_new_tokens,
-                pad_token_id,
-            )
-        # TODO: (susan) choose one way to pad results
-        prompt_output = self.tokenizer.pad(
-            {"input_ids": output.prompt_ids},
-            padding="max_length",
-            max_length=self.rollout_config.prompt_length,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        if prompt_output["input_ids"].dim() == 1:
-            prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
-            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
-
-        prompt_ids = prompt_output["input_ids"]
-        extra_fields = dict(output.extra_fields)
-        extra_fields["raw_prompt"] = kwargs["raw_prompt"]
-        extra_fields["attention_mask"] = prompt_output["attention_mask"]
-        if ar_response_mask is not None:
-            extra_fields["response_mask"] = ar_response_mask.unsqueeze(0)
-        if "text_encoder_responses" not in extra_fields:
-            extra_fields["text_encoder_responses"] = output.refined_prompt
-
+        prompt_ids = prompt_output["input_ids"]  # padded prompt ids
         await self._compute_ar_score(
             output,
             prompt_ids,
@@ -358,18 +394,25 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             validate=validate,
         )
 
+        extra_fields = dict(output.extra_fields)
+        extra_fields["raw_prompt"] = kwargs["raw_prompt"]
+        if "text_encoder_responses" not in extra_fields:
+            extra_fields["text_encoder_responses"] = output.refined_prompt
         if "reward_extra_info" in output.extra_fields:
             extra_fields["reward_extra_info"] = output.extra_fields["reward_extra_info"]
 
         return _InternalARAgentLoopOutput(
             prompt_ids=prompt_ids,
-            response_ids=response_ids,
-            refined_prompt=output.refined_prompt,
+            response_ids=response_output["input_ids"],
+            input_ids=input_ids,
+            position_ids=position_ids,
+            response_mask=response_mask,
+            attention_mask=attention_mask,
             ar_response_logprobs=ar_response_logprobs,
             ar_reward_score=output.ar_reward_score,
             num_turns=output.num_turns,
             metrics=output.metrics,
-            extra_fields=extra_fields,
+            extra_fields=output.extra_fields,
         )
 
     async def _compute_ar_score(
@@ -432,13 +475,21 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         inputs: list[_InternalARAgentLoopOutput],
         input_non_tensor_batch: dict | None = None,
     ) -> DataProto:
-        """Process padded AR outputs and combine them into a batch."""
+        """Process padded AR outputs and combine them into a batch.
+        Returns:
+            Tensors include prompts, responses, response_mask, input_ids, attention_mask,
+            position_ids, rollout_ar_log_probs, rm_scores
+        """
         prompt_ids = torch.cat([input.prompt_ids for input in inputs], dim=0)
-        ar_response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
+        position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
+        response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
+        response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
 
         batch_dict: dict[str, torch.Tensor] = {
             "prompts": prompt_ids,
-            "ar_response_ids": ar_response_ids,
+            "responses": response_ids,
+            "position_ids": position_ids,
+            "response_mask": response_mask,
         }
         if inputs[0].ar_response_logprobs is not None:
             batch_dict["rollout_ar_log_probs"] = torch.cat([input.ar_response_logprobs for input in inputs], dim=0)

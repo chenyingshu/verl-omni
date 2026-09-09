@@ -227,6 +227,7 @@ class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
             metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
 
         ar_response_ids = output.extra_fields.pop("ar_response_ids")
+        ar_response_mask = output.extra_fields.pop("ar_response_mask")
         ar_log_probs = output.extra_fields.pop("ar_all_log_probs", None)
         refined_prompt = output.extra_fields.pop("refined_prompt")
         text_encoder_responses = output.extra_fields.pop("text_encoder_responses")
@@ -234,6 +235,7 @@ class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
         return ARAgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=ar_response_ids,
+            response_mask=ar_response_mask,
             ar_response_logprobs=ar_log_probs,
             refined_prompt=refined_prompt,
             num_turns=2,
