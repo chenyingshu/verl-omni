@@ -30,6 +30,7 @@ import hydra
 import numpy as np
 import ray
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 from tensordict import TensorDict
@@ -58,6 +59,29 @@ def _config_to_sampling_dict(config: Optional[BaseConfig]) -> dict:
     if config is None:
         return {}
     return {k: v for k, v in config.items() if not k.startswith("_")}
+
+
+def _pad_llm_generation_outputs(
+    response_ids: torch.Tensor,
+    log_probs: torch.Tensor | None,
+    max_new_tokens: int,
+    pad_token_id: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Right-pad per-request AR generation tensors to ``max_new_tokens``.
+
+    Per-request ``generate`` stops at EOS, so samples reach ``_postprocess``
+    with different lengths while it batches them with ``torch.cat``.
+    """
+    gen_len = int(response_ids.shape[-1])
+    if gen_len > max_new_tokens:
+        raise ValueError(f"llm_response_ids length {gen_len} exceeds rollout.max_new_tokens={max_new_tokens}")
+    attention_mask = torch.zeros(*response_ids.shape[:-1], max_new_tokens, dtype=torch.long, device=response_ids.device)
+    attention_mask[..., :gen_len] = 1
+    padded_ids = F.pad(response_ids, (0, max_new_tokens - gen_len), value=pad_token_id)
+    padded_log_probs = None
+    if log_probs is not None:
+        padded_log_probs = F.pad(log_probs, (0, 0, 0, max_new_tokens - log_probs.shape[-2]), value=0.0)
+    return padded_ids, attention_mask, padded_log_probs
 
 
 class ARAgentLoopOutput(BaseModel):
@@ -284,17 +308,6 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         **kwargs,
     ) -> _InternalARAgentLoopOutput:
         """Post-process a single AR agent-loop output."""
-        prompt_output = self.tokenizer.pad(
-            {"input_ids": output.prompt_ids},
-            padding="max_length",
-            max_length=self.rollout_config.prompt_length,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        if prompt_output["input_ids"].dim() == 1:
-            prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
-            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
-
         response_ids = output.response_ids
         if not isinstance(response_ids, torch.Tensor):
             response_ids = torch.as_tensor(response_ids)
@@ -307,10 +320,33 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             if ar_response_logprobs.dim() == 2:
                 ar_response_logprobs = ar_response_logprobs.unsqueeze(0)
 
+        ar_response_mask: torch.Tensor | None = None
+        if isinstance(response_ids, torch.Tensor):
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            response_ids, ar_response_mask, ar_response_logprobs = _pad_llm_generation_outputs(
+                response_ids,
+                ar_response_logprobs if isinstance(ar_response_logprobs, torch.Tensor) else None,
+                self.rollout_config.max_new_tokens,
+                pad_token_id,
+            )
+        # TODO: (susan) choose one way to pad results
+        prompt_output = self.tokenizer.pad(
+            {"input_ids": output.prompt_ids},
+            padding="max_length",
+            max_length=self.rollout_config.prompt_length,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        if prompt_output["input_ids"].dim() == 1:
+            prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
+            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
+
         prompt_ids = prompt_output["input_ids"]
         extra_fields = dict(output.extra_fields)
         extra_fields["raw_prompt"] = kwargs["raw_prompt"]
         extra_fields["attention_mask"] = prompt_output["attention_mask"]
+        if ar_response_mask is not None:
+            extra_fields["response_mask"] = ar_response_mask.unsqueeze(0)
         if "text_encoder_responses" not in extra_fields:
             extra_fields["text_encoder_responses"] = output.refined_prompt
 

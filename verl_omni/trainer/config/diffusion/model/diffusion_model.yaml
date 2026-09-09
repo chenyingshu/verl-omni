@@ -44,8 +44,8 @@ text_encoder_subfolder: text_encoder
 transformer_subfolder: transformer
 
 # Diffusers attention backend.
-# Supported: "native", "_native_npu", "_flash_3_varlen_hub"
-# GPU default; NPU recipes override with _native_npu. Falls back to native when FA3 deps are missing.
+# Supported: "native", "_native_npu", "flash_varlen_hub", "_flash_3_varlen_hub"
+# GPU default; NPU recipes override with _native_npu. Falls back to native when FA2/FA3 deps are missing.
 attn_backend: _flash_3_varlen_hub
 
 # Set to positive value to enable LoRA (e.g., 32)
@@ -65,6 +65,12 @@ target_parameters: null
 
 # Exclude modules from LoRA adaptation
 exclude_modules: null
+
+# LoRA (Low-Rank Adaptation) configuration
+lora:
+
+  # whether to merge LoRA into base weights before transferring to vllm_omni
+  merge: False
 
 # Path to pre-trained LoRA adapter to load for continued training
 lora_adapter_path: null

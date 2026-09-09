@@ -77,14 +77,19 @@ def _assert_ar_outputs(result: DataProto, *, batch_size: int, max_token_len: int
     """Validate Qwen-Image (AR) text-encoder returns by rollout."""
     ar_response_ids = result.batch["ar_response_ids"]
     ar_all_log_probs = result.batch.get("rollout_ar_log_probs")
+    ar_attention_mask = result.batch["ar_response_attention_mask"]
     text_encoder_responses = result.non_tensor_batch["text_encoder_responses"]
     _assert_non_empty_tensor(ar_response_ids, "ar_response_ids")
     _assert_non_empty_tensor(ar_all_log_probs, "rollout_ar_log_probs")
+    _assert_non_empty_tensor(ar_attention_mask, "ar_response_attention_mask")
 
     assert ar_response_ids.shape == (batch_size, max_token_len)
     if ar_all_log_probs is not None:
         assert ar_all_log_probs.shape[1] <= max_token_len
         assert ar_all_log_probs.shape == (batch_size, ar_all_log_probs.shape[1], ar_all_log_probs.shape[-1])
+    assert ar_attention_mask.shape == (batch_size, max_token_len)
+    assert ar_attention_mask.dtype == torch.long
+    assert ar_attention_mask.min() >= 0 and ar_attention_mask.max() <= 1
     assert len(text_encoder_responses) == batch_size
 
 
@@ -271,6 +276,8 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             "negative_prompt_embeds",
             "negative_prompt_embeds_mask",
             "rollout_log_probs",
+            "rollout_llm_log_probs",
+            "ar_response_attention_mask",
         ]
         diffusion_expected_non_tensor_batch_keys = []
         if agent_reward_loop:
