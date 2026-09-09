@@ -1249,7 +1249,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
             reward_scores = batch_reward.non_tensor_batch.pop("reward/ar")
 
             # compute average score for each raw-refined prompt pairs
-            num_rewards = ar_batch.batch["ar_response_ids"].shape[0]
+            num_rewards = ar_batch.batch["responses"].shape[0]
             assert (
                 (reward_scores.ndim == 2)
                 and (num_rewards * avg_size == reward_scores.shape[0])

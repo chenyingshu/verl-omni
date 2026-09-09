@@ -215,11 +215,12 @@ class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
     async def _run_ar(self, sampling_params: dict[str, Any], **kwargs) -> ARAgentLoopOutput:
         # Stage 1: AR part
         raw_prompt = kwargs["raw_prompt"]
-        prompt_ids = await self.apply_chat_template(raw_prompt)
+        # TODO: (susan) add support for vision inputs for vision editing
+        prompt_ids = await self.ct_build_initial_tokens(raw_prompt)
         metrics = {}
         with simple_timer("generate_sequences", metrics):
             output = await self.server_manager.generate(
-                request_id=uuid4().hex,
+                request_id=self._get_routing_request_id(kwargs.get("uid")),
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
             )

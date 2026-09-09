@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import torch
-
 from verl.utils.torch_functional import get_response_mask
 from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.request import OmniDiffusionRequest
@@ -114,7 +113,9 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             logprobs = torch.nn.functional.log_softmax(scores, dim=-1)
             # Padding: B x max_response_length x vocab_size
             if logprobs.shape[1] < max_new_tokens:
-                logprobs = F.pad(logprobs, (0, 0, 0, max_new_tokens - logprobs.shape[1]), value=0.0)
+                logprobs = torch.nn.functional.pad(
+                    logprobs, (0, 0, 0, max_new_tokens - logprobs.shape[1]), value=0.0
+                )
         else:
             logprobs = None
 
@@ -173,23 +174,23 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         prompt_ids = prompt_ids.unsqueeze(0) if prompt_ids.ndim == 1 else prompt_ids
         attention_mask = attention_mask.unsqueeze(0) if attention_mask.ndim == 1 else attention_mask
 
-        # gerenete response for each prompt
-        ar_response_ids = []
-        ar_all_log_probs = []
+        # generate response for each prompt
+        ar_response_ids_list: list[torch.Tensor] = []
+        ar_all_log_probs: list[torch.Tensor] = []
         all_text_encoder_responses: list[str] = []
         for _ in range(num_responses_per_prompt):
-            ar_response_ids, ar_log_probs, text_encoder_responses = self._get_qwen_text_response(
+            response_ids, ar_log_probs, text_encoder_responses = self._get_qwen_text_response(
                 prompt_ids=prompt_ids,
                 attention_mask=attention_mask,
                 return_logprobs=return_logprobs,
                 **ar_kwargs,
             )
-            ar_response_ids.append(ar_response_ids)
+            ar_response_ids_list.append(response_ids)
             if return_logprobs:
                 ar_all_log_probs.append(ar_log_probs)
             all_text_encoder_responses.extend(text_encoder_responses)
 
-        ar_response_ids = torch.cat(ar_response_ids, dim=0)  # B*num_responses_per_prompt x response_length
+        ar_response_ids = torch.cat(ar_response_ids_list, dim=0)  # B*num_responses_per_prompt x response_length
         if return_logprobs:
             ar_all_log_probs = torch.cat(
                 ar_all_log_probs, dim=0

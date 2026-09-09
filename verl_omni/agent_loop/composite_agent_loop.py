@@ -67,12 +67,6 @@ class ARAgentLoopOutput(BaseModel):
 
     prompt_ids: list[int]
     """Input ids of raw input prompt"""
-    # output_ids: list[int]
-    # """Output ids of generated response"""
-    # output_mask: torch.Tensor
-    # """Attention mask for padded output tokens (torch.Tensor)."""
-    # output_position_ids: torch.Tensor
-    # """Position ids for padded output tokens (torch.Tensor)."""
     response_ids: Any
     """Full response AR tokens output (torch.Tensor)."""
     response_mask: Any
@@ -270,6 +264,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         )
         return await self._agent_loop_postprocess(output, validate=validate, **kwargs)
 
+    # copy from verl.experimental.agent_loop.agent_loop.AgentLoopWorker
     def _pad_token_ids(
         self,
         tokens: list[int],
@@ -482,14 +477,18 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         """
         prompt_ids = torch.cat([input.prompt_ids for input in inputs], dim=0)
         position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
-        response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
         response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
+        response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
+        input_ids = torch.cat([input.input_ids for input in inputs], dim=0)
+        attention_mask = torch.cat([input.attention_mask for input in inputs], dim=0)
 
         batch_dict: dict[str, torch.Tensor] = {
             "prompts": prompt_ids,
             "responses": response_ids,
+            "input_ids": input_ids,
             "position_ids": position_ids,
             "response_mask": response_mask,
+            "attention_mask": attention_mask,
         }
         if inputs[0].ar_response_logprobs is not None:
             batch_dict["rollout_ar_log_probs"] = torch.cat([input.ar_response_logprobs for input in inputs], dim=0)

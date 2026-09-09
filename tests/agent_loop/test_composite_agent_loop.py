@@ -73,23 +73,32 @@ def _assert_non_empty_tensor(value, field_name: str) -> None:
     assert value.numel() > 0, f"{field_name} should not be empty"
 
 
-def _assert_ar_outputs(result: DataProto, *, batch_size: int, max_token_len: int) -> None:
+def _assert_ar_outputs(result: DataProto, *, batch_size: int, prompt_len: int, max_token_len: int) -> None:
     """Validate Qwen-Image (AR) text-encoder returns by rollout."""
-    ar_response_ids = result.batch["ar_response_ids"]
+    ar_input_ids = result.batch["input_ids"]
+    ar_attention_mask = result.batch["attention_mask"]
+    ar_response_ids = result.batch["responses"]
+    ar_response_mask = result.batch["response_mask"]
     ar_all_log_probs = result.batch.get("rollout_ar_log_probs")
-    ar_attention_mask = result.batch["ar_response_attention_mask"]
     text_encoder_responses = result.non_tensor_batch["text_encoder_responses"]
-    _assert_non_empty_tensor(ar_response_ids, "ar_response_ids")
+    _assert_non_empty_tensor(ar_input_ids, "input_ids")
+    _assert_non_empty_tensor(ar_response_ids, "responses")
     _assert_non_empty_tensor(ar_all_log_probs, "rollout_ar_log_probs")
-    _assert_non_empty_tensor(ar_attention_mask, "ar_response_attention_mask")
+    _assert_non_empty_tensor(ar_attention_mask, "attention_mask")
+    _assert_non_empty_tensor(ar_response_mask, "response_mask")
 
+    # check padding
+    assert ar_input_ids.shape == (batch_size, prompt_len + max_token_len)
     assert ar_response_ids.shape == (batch_size, max_token_len)
     if ar_all_log_probs is not None:
-        assert ar_all_log_probs.shape[1] <= max_token_len
+        assert ar_all_log_probs.shape[1] == max_token_len
         assert ar_all_log_probs.shape == (batch_size, ar_all_log_probs.shape[1], ar_all_log_probs.shape[-1])
-    assert ar_attention_mask.shape == (batch_size, max_token_len)
+    assert ar_attention_mask.shape == (batch_size, prompt_len + max_token_len)
     assert ar_attention_mask.dtype == torch.long
     assert ar_attention_mask.min() >= 0 and ar_attention_mask.max() <= 1
+    assert ar_response_mask.shape == (batch_size, max_token_len)
+    assert ar_response_mask.dtype == torch.long
+    assert ar_response_mask.min() >= 0 and ar_response_mask.max() <= 1
     assert len(text_encoder_responses) == batch_size
 
 
@@ -161,7 +170,7 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
         config.actor_rollout_ref.rollout.calculate_log_probs = True
         config.actor_rollout_ref.rollout.ar_calculate_log_probs = True  # ar part
-        config.actor_rollout_ref.rollout.ar.max_new_tokens = 20  # ar part
+        config.actor_rollout_ref.rollout.ar.response_length = 20  # ar part
         config.actor_rollout_ref.rollout.ar.temperature = 0.8  # ar part
         config.actor_rollout_ref.rollout.ar.top_k = 5  # ar part
         config.actor_rollout_ref.rollout.ar.top_p = 0.9  # ar part
@@ -265,7 +274,15 @@ def test_single_turn(init_config, agent_reward_loop: bool):
         assert len(ar_result) == ar_batch_size
         assert len(diffusion_result) == diffusion_batch_size
 
-        ar_expected_batch_keys = ["prompts", "ar_response_ids", "rollout_ar_log_probs"]
+        ar_expected_batch_keys = [
+            "prompts",
+            "responses",
+            "input_ids",
+            "position_ids",
+            "attention_mask",
+            "response_mask",
+            "rollout_ar_log_probs",
+        ]
         ar_expected_non_tensor_batch_keys = ["text_encoder_responses"]
         diffusion_expected_batch_keys = [
             "responses",
@@ -276,8 +293,6 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             "negative_prompt_embeds",
             "negative_prompt_embeds_mask",
             "rollout_log_probs",
-            "rollout_llm_log_probs",
-            "ar_response_attention_mask",
         ]
         diffusion_expected_non_tensor_batch_keys = []
         if agent_reward_loop:
@@ -310,9 +325,10 @@ def test_single_turn(init_config, agent_reward_loop: bool):
 
         height = init_config.actor_rollout_ref.rollout.pipeline.height
         width = init_config.actor_rollout_ref.rollout.pipeline.width
-        max_new_tokens = init_config.actor_rollout_ref.rollout.ar.max_new_tokens
+        prompt_len = init_config.actor_rollout_ref.rollout.prompt_length
+        max_new_tokens = init_config.actor_rollout_ref.rollout.ar.response_length
 
-        _assert_ar_outputs(ar_result, batch_size=ar_batch_size, max_token_len=max_new_tokens)
+        _assert_ar_outputs(ar_result, batch_size=ar_batch_size, prompt_len=prompt_len, max_token_len=max_new_tokens)
         _assert_diffusion_outputs(
             diffusion_result,
             batch_size=diffusion_batch_size,
