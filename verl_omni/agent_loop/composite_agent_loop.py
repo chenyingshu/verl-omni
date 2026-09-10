@@ -67,13 +67,13 @@ class ARAgentLoopOutput(BaseModel):
 
     prompt_ids: list[int]
     """Input ids of raw input prompt"""
-    response_ids: Any
+    response_ids: list[int]
     """Full response AR tokens output (torch.Tensor)."""
-    response_mask: Any
+    response_mask: list[int]
     """Attention mask for padded response tokens (torch.Tensor)."""
     refined_prompt: Any
     """Refined rewritten prompt in chat-message form for diffusion."""
-    ar_response_logprobs: Optional[list[float]] = None
+    ar_response_logprobs: Optional[Any] = None
     """Log probabilities for the response tokens."""
     ar_reward_score: Optional[float] = None
     """Reward score for the semantic reward."""
@@ -367,7 +367,6 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         valid_mask = attention_mask[0].bool()
         text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
         text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
-        text_position_ids = text_position_ids.unsqueeze(0)  # (1, seq_len)
         # M-RoPE layout expected by ``left_right_2_no_padding``: B x 4 x seq_len.
         position_ids = text_position_ids.unsqueeze(1).expand(-1, 4, -1)
 
@@ -399,9 +398,10 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         return _InternalARAgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_output["input_ids"],
+            response_mask=response_mask,
+            refined_prompt=output.refined_prompt,
             input_ids=input_ids,
             position_ids=position_ids,
-            response_mask=response_mask,
             attention_mask=attention_mask,
             ar_response_logprobs=ar_response_logprobs,
             ar_reward_score=output.ar_reward_score,
@@ -566,7 +566,7 @@ class CompositeAgentLoopManager(AgentLoopManager):
         ar_batch.meta_info = {"timing": ar_timing, **ar_outputs[0].meta_info}
 
         metrics = [output.meta_info.pop("metrics") for output in diffusion_outputs]
-        diffusion_timing = self._performance_metrics(metrics, ar_batch)
+        diffusion_timing = self._performance_metrics(metrics, diffusion_batch)
         diffusion_batch.meta_info = {"timing": diffusion_timing, **diffusion_outputs[0].meta_info}
 
         return ar_batch, diffusion_batch

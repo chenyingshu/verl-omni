@@ -172,8 +172,8 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.ar_calculate_log_probs = True  # ar part
         config.actor_rollout_ref.rollout.ar.response_length = 20  # ar part
         config.actor_rollout_ref.rollout.ar.temperature = 0.8  # ar part
-        config.actor_rollout_ref.rollout.ar.top_k = 5  # ar part
-        config.actor_rollout_ref.rollout.ar.top_p = 0.9  # ar part
+        config.actor_rollout_ref.rollout.ar.top_k = 0  # ar part
+        config.actor_rollout_ref.rollout.ar.top_p = 1.0  # ar part
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
         config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
         tokenizer_max_length = 1024

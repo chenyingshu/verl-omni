@@ -113,9 +113,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             logprobs = torch.nn.functional.log_softmax(scores, dim=-1)
             # Padding: B x max_response_length x vocab_size
             if logprobs.shape[1] < max_new_tokens:
-                logprobs = torch.nn.functional.pad(
-                    logprobs, (0, 0, 0, max_new_tokens - logprobs.shape[1]), value=0.0
-                )
+                logprobs = torch.nn.functional.pad(logprobs, (0, 0, 0, max_new_tokens - logprobs.shape[1]), value=0.0)
         else:
             logprobs = None
 

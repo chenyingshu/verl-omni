@@ -27,6 +27,7 @@ from verl.workers.config.rollout import (
 )
 
 __all__ = [
+    "DiffusionARConfig",
     "DiffusionRolloutAlgoConfig",
     "DiffusionPipelineConfig",
     "DiffusionSamplingConfig",
