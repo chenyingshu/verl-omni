@@ -175,7 +175,7 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.ar.top_k = 0  # ar part
         config.actor_rollout_ref.rollout.ar.top_p = 1.0  # ar part
         config.actor_rollout_ref.rollout.agent.num_workers = min(2, requested_gpus)
-        config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent"
+        config.actor_rollout_ref.rollout.agent.default_agent_loop = "composite_single_turn_agent" # new single-turn agent
         tokenizer_max_length = 1024
         prompt_template_encode_start_idx = 34
         max_length = tokenizer_max_length + prompt_template_encode_start_idx

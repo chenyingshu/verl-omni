@@ -913,6 +913,7 @@ class BaseRayDiffusionTrainer(ABC):
             config=self.config,
             rm_resource_pool=resource_pool,
         )
+        # TODO: (susan) set dual reward worker handles for ar
 
         # create async rollout manager and request scheduler
         # Note: mode is always "async" since sync mode is deprecated

@@ -16,14 +16,16 @@ and decouple rewards for AR.
 
 Usage:
 
+reward.custom_reward_function.path=pkg://verl_omni.reward_loop.reward_manager.multi \
+reward.custom_reward_function.name=_multi_reward_placeholder \
 reward.reward_manager.name=MultiVisualRewardManager
 reward.reward_manager.module.path=pkg://verl_omni.reward_loop.reward_manager
 "+reward.reward_functions.ar.path=$AR_REWARD_PATH"
 '+reward.reward_functions.ar.name=compute_score
-'+reward.reward_functions.ar.weight=1.0'
+'+reward.reward_functions.ar.weight=0.0'
 "+reward.reward_functions.dit.path=$DIT_REWARD_PATH"
 '+reward.reward_functions.dit.name=compute_score'
-'+reward.reward_functions.dit.weight=0.0'
+'+reward.reward_functions.dit.weight=1.0'
 """
 
 import numpy as np
@@ -69,7 +71,7 @@ class TestExtractARRewardsFromColocateBatch:
             f"{AR_REWARD_KEY}/semantic/detail",
         ]
         ar_batch = DataProto.from_dict(
-            tensors={"ar_response_ids": torch.zeros(num_ar, 5, dtype=torch.long)},
+            tensors={"responses": torch.zeros(num_ar, 5, dtype=torch.long)},
         )
         self.dummy_trainer._extract_ar_reward_tensor(batch_reward, ar_batch, avg_size=rollout_n)
 
@@ -90,7 +92,7 @@ class TestExtractARRewardsFromColocateBatch:
         )
         batch_reward.meta_info["reward_extra_keys"] = [AR_REWARD_KEY]
         ar_batch = DataProto.from_dict(
-            tensors={"ar_response_ids": torch.zeros(3, 5, dtype=torch.long)},
+            tensors={"responses": torch.zeros(3, 5, dtype=torch.long)},
         )
 
         with pytest.raises(AssertionError, match="reward_scores shape"):
