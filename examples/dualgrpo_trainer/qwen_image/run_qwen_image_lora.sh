@@ -1,5 +1,8 @@
 # Qwen-Image LoRA DualGRPO RL, vllm_omni rollout
 set -x
+
+export FLASHINFER_DISABLE_VERSION_CHECK=1
+
 # Set WORKSPACE to any writable directory; defaults to $HOME
 WORKSPACE=${WORKSPACE:-$HOME}
 
@@ -29,6 +32,13 @@ REWARD_ENGINE=vllm
 # Step-wise continuous batching (mutually exclusive with request-level packing).
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-256}
 
+ATTN_BACKEND=_flash_3_varlen_hub
+ROLLOUT_ATTN_BACKEND=FLASH_ATTN
+if ! python3 -c 'from verl_omni.utils.diffusion_attention import fa_available; raise SystemExit(0 if fa_available() else 1)' >/dev/null 2>&1; then
+    ATTN_BACKEND=native
+    ROLLOUT_ATTN_BACKEND=TORCH_SDPA
+fi
+
 # TODO:(susan) now ar and dit shares identical scheduler config, to set different lr
 
 python3 -m verl_omni.trainer.main_diffusion \
@@ -36,10 +46,12 @@ python3 -m verl_omni.trainer.main_diffusion \
     data.train_files=$data_train_path \
     data.val_files=$data_test_path \
     data.train_batch_size=4 \
-    data.max_prompt_length=256 \
+    data.max_prompt_length=1024 \
     actor_rollout_ref.model.path=$model_name \
     actor_rollout_ref.model.algorithm=dual_grpo \
     actor_rollout_ref.model.use_remove_padding=true \
+    actor_rollout_ref.model.attn_backend=${ATTN_BACKEND} \
+    actor_rollout_ref.rollout.rollout_attn_backend=${ROLLOUT_ATTN_BACKEND} \
     actor_rollout_ref.actor.optim.lr=3e-5 \
     actor_rollout_ref.actor.optim.weight_decay=0.0001 \
     actor_rollout_ref.actor.ppo_mini_batch_size=2 \
@@ -92,7 +104,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     "+reward.reward_functions.dit.path=pkg://verl_omni.utils.reward_score.unified_reward" \
     '+reward.reward_functions.dit.name=compute_score_unified_reward' \
     '+reward.reward_functions.dit.weight=1.0' \
-    '+reward.reward_functions.dit.device=cuda:1' \
     "+trainer.train_ar=true" \
     trainer.logger='["console", "tensorboard", "wandb"]' \
     trainer.project_name=dual_grpo \
@@ -105,5 +116,3 @@ python3 -m verl_omni.trainer.main_diffusion \
     trainer.test_freq=30 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=3 "$@"
-
-    # "+reward.reward_functions.dit.model_name_or_path=$DIT_REWARD_MODEL_NAME" \

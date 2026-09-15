@@ -104,7 +104,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             input_ids=prompt_ids.to(self.device),
             attention_mask=attention_mask.to(self.device),
             return_dict_in_generate=True,
-            output_scores=return_logprobs,
+            output_scores=return_logprobs,  # apply temperature, top_p, top_k, repetition_penalty
             **ar_kwargs,
         )
         max_new_tokens = ar_kwargs["max_new_tokens"]

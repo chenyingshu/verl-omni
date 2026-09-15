@@ -20,6 +20,8 @@ Mirrors the trainer flow in ``PolicyGradientRayTrainer.fit``:
 2. ``infer_batch`` on the DiT batch (``num_prompts * rollout.n * rollout.m`` rows), then ``next_stage``.
 3. ``train_batch`` on the AR batch (``diffusion_loss``), then ``next_stage``.
 4. ``train_batch`` on the DiT batch (``diffusion_loss``), then ``next_stage``.
+
+Note: it requires flash attention 2 to support SP for AR model.
 """
 
 from __future__ import annotations

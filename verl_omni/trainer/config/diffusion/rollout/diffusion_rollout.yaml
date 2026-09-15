@@ -155,6 +155,9 @@ val_kwargs:
   # whether to repeat n times for validation
   n: 1
 
+  # AR stage: number of samples per prompt during validation (composite rollouts)
+  m: ${oc.select:actor_rollout_ref.rollout.m,1}
+
   # Pipeline configuration for validation
   pipeline:
 

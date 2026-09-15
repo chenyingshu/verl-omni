@@ -158,7 +158,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             - ``response_mask``: ``[ar_bsz, ar_response_length]`` attention mask for padded response tokens.
             - ``input_ids``: ``[ar_bsz, prompt_length + ar_response_length]`` padded full response tokens.
             - ``attention_mask`: ``[ar_bsz, prompt_length + ar_response_length]`` attention mask for input_ids.
-            - ``position_ids``: ``[ar_bsz, 4, prompt_length + ar_response_length]`` M-RoPE 3D position ids for input_ids.
+            - ``position_ids``: ``[ar_bsz, 4, prompt_length + ar_response_length]``
+            M-RoPE 3D position ids for input_ids.
             - ``rollout_ar_log_probs`` (optional): AR token log-probs.
             - ``rm_scores`` (optional): ``[ar_bsz, 1]`` AR reward scores.
 
@@ -188,9 +189,11 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             sampling_params["seed"] = config.val_kwargs.seed
             sampling_params["logprobs"] = False
 
-            sampling_params["top_p"] = config.val_kwargs.top_p
-            sampling_params["top_k"] = config.val_kwargs.top_k
-            sampling_params["temperature"] = config.val_kwargs.temperature
+            sampling_params["top_p"] = config.val_kwargs.ar.top_p
+            sampling_params["top_k"] = config.val_kwargs.ar.top_k
+            sampling_params["temperature"] = config.val_kwargs.ar.temperature
+            sampling_params["repetition_penalty"] = config.val_kwargs.ar.repetition_penalty
+            sampling_params["response_length"] = config.val_kwargs.ar.response_length
             sampling_params["ar_logprobs"] = False
         else:
             sampling_params["global_steps"] = batch.meta_info["global_steps"]
