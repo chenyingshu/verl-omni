@@ -58,18 +58,21 @@ class TestExtractARRewardsFromColocateBatch:
         batch_reward = DataProto.from_dict(
             tensors={"rm_scores": torch.zeros(num_ar * rollout_n, 1)},
             non_tensors={
-                AR_REWARD_KEY: np.array(ar_per_image_scores, dtype=np.float32).reshape(-1, 1),
+                "reward/combined": np.zeros((num_ar * rollout_n,)),
+                "reward/dit": np.zeros((num_ar * rollout_n,)),
+                AR_REWARD_KEY: np.array(ar_per_image_scores, dtype=np.float32),  # (batch_size,),
                 f"{AR_REWARD_KEY}/semantic": np.array(ar_per_image_scores, dtype=np.float32),
                 f"{AR_REWARD_KEY}/semantic/detail": (
                     np.array(["ar detail 0"] * rollout_n + ["ar detail 1"] * rollout_n + ["ar detail 2"] * rollout_n)
                 ),
             },
         )
-        batch_reward.meta_info["reward_extra_keys"] = [
+        ar_reward_extra_keys = [
             AR_REWARD_KEY,
             f"{AR_REWARD_KEY}/semantic",
             f"{AR_REWARD_KEY}/semantic/detail",
         ]
+        batch_reward.meta_info["reward_extra_keys"] = ar_reward_extra_keys
         ar_batch = DataProto.from_dict(
             tensors={"responses": torch.zeros(num_ar, 5, dtype=torch.long)},
         )
@@ -79,16 +82,18 @@ class TestExtractARRewardsFromColocateBatch:
         assert ar_batch.batch["rm_scores"][0].item() == pytest.approx(0.15)
         assert ar_batch.batch["rm_scores"][1].item() == pytest.approx(1.15)
         assert ar_batch.batch["rm_scores"][2].item() == pytest.approx(2.15)
-        assert AR_REWARD_KEY not in batch_reward.non_tensor_batch
-        assert f"{AR_REWARD_KEY}/semantic" in ar_batch.non_tensor_batch
-        assert f"{AR_REWARD_KEY}/semantic/detail" in ar_batch.non_tensor_batch
+        for key in ar_reward_extra_keys:
+            assert key in ar_batch.non_tensor_batch.keys()
+            assert key in ar_batch.meta_info["reward_extra_keys"]
+            assert key not in batch_reward.non_tensor_batch.keys()
+            assert key not in batch_reward.meta_info["reward_extra_keys"]
         assert ar_batch.non_tensor_batch[f"{AR_REWARD_KEY}/semantic"][1] == pytest.approx(1.15)
         assert ar_batch.non_tensor_batch[f"{AR_REWARD_KEY}/semantic/detail"][1] == "ar detail 1"
 
     def test_extract_ar_rewards_raises_when_row_count_mismatches(self):
         batch_reward = DataProto.from_dict(
             tensors={"rm_scores": torch.zeros(2, 1)},
-            non_tensors={AR_REWARD_KEY: np.array([0.0, 0.1], dtype=np.float32).reshape(-1, 1)},
+            non_tensors={AR_REWARD_KEY: np.array([0.0, 0.1], dtype=np.float32)},
         )
         batch_reward.meta_info["reward_extra_keys"] = [AR_REWARD_KEY]
         ar_batch = DataProto.from_dict(

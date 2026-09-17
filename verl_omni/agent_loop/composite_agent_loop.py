@@ -182,6 +182,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
 
         is_validate = batch.meta_info.get("validate", False)
         per_rollout_seeds: Optional[list[int]] = None
+        diffusion_n = config.n
 
         if is_validate:
             sampling_params.update(_config_to_sampling_dict(config.val_kwargs.pipeline))
@@ -202,14 +203,13 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             global_indices = batch.non_tensor_batch.get("_rollout_seed_global_idx")
             if global_indices is not None:
                 global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
-            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch), global_indices)
+            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, global_indices)
 
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop
             batch.non_tensor_batch["agent_name"] = np.array([default_agent_loop] * len(batch), dtype=object)
 
         # two-stage generation: one batch row -> one AR output -> diffusion_n images
-        diffusion_n = config.n
         tasks = []
         for i in range(len(batch)):
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
@@ -231,11 +231,13 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             diffusion_inputs.extend(diffusion_outputs)
 
         ar_non_tensor_batch = None
+        diffusion_non_tensor_batch = None
         if batch.non_tensor_batch:
             ar_non_tensor_batch = {k: v[: len(ar_inputs)] for k, v in batch.non_tensor_batch.items()}
+            diffusion_non_tensor_batch = batch.repeat(diffusion_n, interleave=True).non_tensor_batch
 
         ar_output = self._postprocess_ar(ar_inputs, input_non_tensor_batch=ar_non_tensor_batch)
-        diffusion_output = super()._postprocess(diffusion_inputs)
+        diffusion_output = super()._postprocess(diffusion_inputs, input_non_tensor_batch=diffusion_non_tensor_batch)
 
         return ar_output, diffusion_output
 

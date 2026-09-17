@@ -279,6 +279,8 @@ class BaseRayDiffusionTrainer(ABC):
         self.train_ar_n_diffusion = self.config.trainer.get("train_ar", False) and not self.config.trainer.get(
             "freeze_diffusion", False
         )
+        if not self.train_ar_n_diffusion:
+            self.config.actor_rollout_ref.rollout.m = 1
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
@@ -596,7 +598,7 @@ class BaseRayDiffusionTrainer(ABC):
             self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _dump_ar_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
-        """Dump rollout/validation samples as JSONL asynchronously."""
+        """Dump rollout/validation samples as JSONL."""
 
         global_steps = self.global_steps
         RayPPOTrainer._write_generations(
@@ -739,7 +741,13 @@ class BaseRayDiffusionTrainer(ABC):
             )
 
             if self.train_ar_n_diffusion:
-                ar_batch = test_batch.union(ar_output_gen_batch)
+                # copy batch
+                ar_test_batch = DataProto(
+                    batch=test_batch.batch.copy(),
+                    non_tensor_batch=test_batch.non_tensor_batch.copy(),
+                    meta_info=test_batch.meta_info.copy(),
+                )
+                ar_batch = ar_test_batch.union(ar_output_gen_batch)
                 ar_batch.meta_info["validate"] = True
                 test_batch = test_batch.repeat(repeat_times=val_n, interleave=True)
             test_batch = test_batch.union(test_output_gen_batch)
@@ -826,11 +834,8 @@ class BaseRayDiffusionTrainer(ABC):
                 fps=int(self.config.trainer.get("video_fps", 24)),
                 audios=sample_audios,
                 audio_sample_rates=sample_audio_sample_rates,
-                ar_inputs=ar_sample_inputs,
-                ar_outputs=ar_sample_outputs,
-                ar_scores=ar_sample_scores,
             )
-            if self.train_ar_n_diffuison:
+            if self.train_ar_n_diffusion:
                 self._dump_ar_generations(
                     inputs=ar_sample_inputs,
                     outputs=ar_sample_outputs,
@@ -1386,17 +1391,18 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
 
             # compute average score for each raw-refined prompt pairs
             num_rewards = ar_batch.batch["responses"].shape[0]
-            assert (
-                (reward_scores.ndim == 2)
-                and (num_rewards * avg_size == reward_scores.shape[0])
-                and (reward_scores.shape[1] == 1)
-            ), f"reward_scores shape: {reward_scores.shape}, num_rewards: {num_rewards}, avg_size: {avg_size}"
+            assert (reward_scores.ndim == 1) and (num_rewards * avg_size == reward_scores.shape[0]), (
+                f"reward_scores shape: {reward_scores.shape}, num_rewards: {num_rewards}, avg_size: {avg_size}"
+            )
             reward_mean = []
-            reward_mean = reward_scores.reshape(num_rewards, avg_size, reward_scores.shape[1]).mean(axis=1)
+            reward_mean = reward_scores.reshape(num_rewards, avg_size, 1).mean(axis=1)
             reward_tensor = torch.from_numpy(reward_mean).float()
             ar_batch.batch["rm_scores"] = reward_tensor
+            ar_batch.non_tensor_batch["reward/ar"] = reward_mean
 
             all_reward_keys = list(batch_reward.meta_info["reward_extra_keys"])
+            reward_extra_keys = ["reward/ar"]
+            batch_reward.meta_info["reward_extra_keys"].remove("reward/ar")
             for key in all_reward_keys:
                 if "reward/ar" != key and "reward/ar" in key:
                     sub_scores = batch_reward.non_tensor_batch.pop(key)
@@ -1408,6 +1414,10 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                     else:
                         sub_reward = sub_scores[::avg_size]
                     ar_batch.non_tensor_batch[key] = sub_reward
+
+                    reward_extra_keys.append(key)
+                    batch_reward.meta_info["reward_extra_keys"].remove(key)
+            ar_batch.meta_info["reward_extra_keys"] = reward_extra_keys
 
     def _update_ar_actor(self, batch: DataProto) -> DataProto:
         rollout_config = self.config.actor_rollout_ref.rollout
@@ -1550,7 +1560,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                 else:
                     gen_batch_for_rollout = gen_batch.repeat(repeat_times=rollout_n, interleave=True)
                 gen_batch_for_rollout.non_tensor_batch["_rollout_seed_global_idx"] = np.arange(
-                    len(gen_batch_for_rollout), dtype=np.int64
+                    rollout_m * rollout_n, dtype=np.int64
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
@@ -1582,10 +1592,14 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
 
                     if self.train_ar_n_diffusion:
                         batch = batch.repeat(repeat_times=rollout_m, interleave=True)
-                        ar_batch = batch.union(ar_gen_batch_output)
-                        if rollout_n > 1:
-                            batch = batch.repeat(repeat_times=rollout_n, interleave=True)
-                    else:
+                        # copy batch
+                        ar_batch = DataProto(
+                            batch=batch.batch.copy(),
+                            non_tensor_batch=batch.non_tensor_batch.copy(),
+                            meta_info=batch.meta_info.copy(),
+                        )
+                        ar_batch = ar_batch.union(ar_gen_batch_output)
+                    if rollout_n > 1:
                         batch = batch.repeat(repeat_times=rollout_n, interleave=True)
                     batch = batch.union(gen_batch_output)
 

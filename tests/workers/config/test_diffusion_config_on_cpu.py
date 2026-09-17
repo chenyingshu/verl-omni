@@ -435,7 +435,7 @@ class TestDiffusionRolloutConfigHydra:
         assert rollout_cfg.ar.temperature == pytest.approx(0.7)
         assert rollout_cfg.ar.response_length == 512
         assert rollout_cfg.val_kwargs.ar.top_p == pytest.approx(0.9)
-        assert rollout_cfg.val_kwargs.m == 2
+        assert rollout_cfg.val_kwargs.m == 1
 
 
 # ---------------------------------------------------------------------------
