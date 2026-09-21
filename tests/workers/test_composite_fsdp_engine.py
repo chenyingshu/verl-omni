@@ -21,7 +21,7 @@ Mirrors the trainer flow in ``PolicyGradientRayTrainer.fit``:
 3. ``train_batch`` on the AR batch (``diffusion_loss``), then ``next_stage``.
 4. ``train_batch`` on the DiT batch (``diffusion_loss``), then ``next_stage``.
 
-Note: it requires flash attention 2 to support SP for AR model.
+Note: it requires flash attention 2 to support data processing (padding and unpadding) for AR model.
 """
 
 from __future__ import annotations
@@ -89,8 +89,8 @@ def create_composite_training_config(
         "pipeline.true_cfg_scale=4.0",
         "algo.noise_level=1.2",
         "algo.sde_type=sde",
-        "+ar.override_config.attn_implementation=flash_attention_2",  # default is FA2
-        "use_remove_padding=True",  # AR sp must apply
+        "+ar.override_config.attn_implementation=sdpa",  # new, default is FA2
+        "use_remove_padding=True",  # new, AR sp must apply
     ]
 
     # if cp > 1 or not fa3_available():
@@ -125,7 +125,7 @@ def create_composite_training_config(
     actor_config: FSDPDiffusionActorConfig = omega_conf_to_dataclass(cfg)
 
     training_config = TrainingWorkerConfig(
-        model_type="diffusion_composite_model",
+        model_type="diffusion_composite_model", # new
         model_config=model_config,
         engine_config=actor_config.engine,
         optimizer_config=actor_config.optim,

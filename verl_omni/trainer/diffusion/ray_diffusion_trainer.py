@@ -1335,6 +1335,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
             calculate_entropy=True,  # TODO: TBD (susan) seems useless
             # calculate_sum_pi_squared=calculate_sum_pi_squared,
             compute_loss=False,
+            temperature=self.config.actor_rollout_ref.rollout.ar.temperature,
         )
         output = self.actor_rollout_wg.infer_actor_batch(batch_td)
         # gather output
@@ -1400,11 +1401,11 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
             ar_batch.batch["rm_scores"] = reward_tensor
             ar_batch.non_tensor_batch["reward/ar"] = reward_mean
 
+            batch_reward.meta_info["reward_extra_keys"].remove("reward/ar")
             all_reward_keys = list(batch_reward.meta_info["reward_extra_keys"])
             reward_extra_keys = ["reward/ar"]
-            batch_reward.meta_info["reward_extra_keys"].remove("reward/ar")
             for key in all_reward_keys:
-                if "reward/ar" != key and "reward/ar" in key:
+                if "reward/ar" in key:
                     sub_scores = batch_reward.non_tensor_batch.pop(key)
                     if sub_scores.ndim == 1:
                         sub_scores = sub_scores.reshape(-1, 1)
@@ -1560,7 +1561,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                 else:
                     gen_batch_for_rollout = gen_batch.repeat(repeat_times=rollout_n, interleave=True)
                 gen_batch_for_rollout.non_tensor_batch["_rollout_seed_global_idx"] = np.arange(
-                    rollout_m * rollout_n, dtype=np.int64
+                    len(gen_batch_for_rollout), dtype=np.int64
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
