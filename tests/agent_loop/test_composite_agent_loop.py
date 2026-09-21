@@ -45,26 +45,21 @@ class _FakeRemoteComputeScore:
 
     async def remote(self, data: DataProto) -> dict:
         self.received_data = data
-        return {"reward_score": 1.0, "reward_extra_info": {"dit_msg": "dummy_dit_reward_info"}}
-
-
-class _FakeARRemoteComputeScore:
-    def __init__(self):
-        self.received_data: DataProto | None = None
-
-    async def remote(self, data: DataProto) -> dict:
-        self.received_data = data
-        return {"reward_score": 1.0, "reward_extra_info": {"ar_msg": "dummy_ar_reward_info"}}
+        return {
+            "reward_score": 2.0,
+            "reward_extra_info": {
+                "reward/combined": 2.0,
+                "reward/dit": 1.0,
+                "reward/dit/dit_msg": "dummy_dit_reward_info",
+                "reward/ar": 1.0,
+                "reward/ar/ar_msg": "dummy_ar_reward_info",
+            },
+        }
 
 
 class _FakeRewardLoopWorkerHandle:
     def __init__(self):
         self.compute_score = _FakeRemoteComputeScore()
-
-
-class _FakeARRewardLoopWorkerHandle:
-    def __init__(self):
-        self.compute_score = _FakeARRemoteComputeScore()
 
 
 def _assert_non_empty_tensor(value, field_name: str) -> None:
@@ -222,12 +217,11 @@ def test_single_turn(init_config, agent_reward_loop: bool):
     )
     try:
         dit_reward_handle = _FakeRewardLoopWorkerHandle()
-        ar_reward_handle = _FakeARRewardLoopWorkerHandle()
         llm_server_manager = LLMServerManager.create(config=init_config)
         agent_loop_manager = CompositeAgentLoopManager.create(
             config=init_config,
             llm_client=llm_server_manager.get_client(),
-            reward_loop_worker_handles=[dit_reward_handle, ar_reward_handle] if agent_reward_loop else None,
+            reward_loop_worker_handles=[dit_reward_handle] if agent_reward_loop else None,
         )
 
         system_prompt = (
@@ -299,9 +293,9 @@ def test_single_turn(init_config, agent_reward_loop: bool):
         diffusion_expected_non_tensor_batch_keys = []
         if agent_reward_loop:
             ar_expected_batch_keys += ["rm_scores"]
-            ar_expected_non_tensor_batch_keys += ["ar_msg"]
+            ar_expected_non_tensor_batch_keys += ["reward/ar", "reward/ar/ar_msg"]
             diffusion_expected_batch_keys += ["rm_scores"]
-            diffusion_expected_non_tensor_batch_keys += ["dit_msg"]
+            diffusion_expected_non_tensor_batch_keys += ["reward/dit/dit_msg"]
 
         for key in ar_expected_batch_keys:
             assert key in ar_result.batch, (

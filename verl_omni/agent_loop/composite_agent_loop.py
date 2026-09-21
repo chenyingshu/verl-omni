@@ -17,13 +17,12 @@ Composite agent framework for multi-stage visual generation by
 AR (LLM/MLLM) + DiT composite architecture, as well as for agentic RL.
 
 - CompositeAgentLoopWorker extends DiffusionAgentLoopWorker with:
-  - a reward handle for AR part
-  - extra returns from AR generation, e.g., reward score and token-level log-probs.
+  - extra returns from AR generation, e.g., token-level log-probs and AR rewards derived from
+    ``MultiVisualRewardManager`` diffusion rollout scores (``reward/ar``).
 
 """
 
 import asyncio
-import random
 from typing import Any, Optional
 
 import hydra
@@ -42,7 +41,6 @@ from verl.experimental.agent_loop.agent_loop import (
     auto_await,
 )
 from verl.protocol import DataProto
-from verl.utils.profiler import simple_timer
 from verl.utils.skip import SkipManager
 from verl.workers.rollout.llm_server import LLMServerClient
 
@@ -52,6 +50,8 @@ from verl_omni.agent_loop.diffusion_agent_loop import (
     _InternalDiffusionAgentLoopOutput,
 )
 from verl_omni.agent_loop.utils import maybe_per_rollout_seeds
+
+AR_REWARD_KEY = "reward/ar"
 
 
 def _config_to_sampling_dict(config: Optional[BaseConfig]) -> dict:
@@ -119,10 +119,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         teacher_client (dict[str, LLMServerClient]): Not used by diffusion training; accepted to
             keep the constructor signature compatible with verl's ``AgentLoopManager.create()``,
             which positionally forwards a teacher client argument to each worker.
-        reward_loop_worker_handles (List[ray.actor.ActorHandle]): Actor handles for streaming
-            reward computation.
-        ar_reward_loop_worker_handles (List[ray.actor.ActorHandle]): Actor handles for streaming
-            reward computation. Optional if reward_loop_worker_handles provides reward computation for both LLM and DiT.
+        reward_loop_worker_handles (List[ray.actor.ActorHandle]): Optional. Actor handles for streaming
+            reward computation (typically ``MultiVisualRewardManager`` for combined AR + DiT rewards).
     """
 
     def __init__(
@@ -130,15 +128,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         config: DictConfig,
         llm_client: LLMServerClient,
         teacher_client: dict[str, LLMServerClient] | None = None,
-        reward_loop_worker_handles: list[ray.actor.ActorHandle] = None,
+        reward_loop_worker_handles: list[ray.actor.ActorHandle] | None = None,
     ):
-        assert reward_loop_worker_handles is None or len(reward_loop_worker_handles) == 2
-        if reward_loop_worker_handles is None:
-            self.ar_reward_loop_worker_handles = None
-        else:
-            self.ar_reward_loop_worker_handles = reward_loop_worker_handles[1:]  # second for llm
-            reward_loop_worker_handles = reward_loop_worker_handles[:1]  # first for dit
-
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 
     async def generate_sequences(self, batch: DataProto) -> tuple[DataProto, DataProto]:
@@ -200,10 +191,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             sampling_params["global_steps"] = batch.meta_info["global_steps"]
             # Prefer trainer-assigned global indices so chunked workers derive the
             # same per-row seed regardless of local batch position / pack order.
-            global_indices = batch.non_tensor_batch.get("_rollout_seed_global_idx")
-            if global_indices is not None:
-                global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
-            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, global_indices)
+            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, None)
 
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop
@@ -310,10 +298,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         """Perform post-processing operations on the output of each individual agent loop."""
         ar_output, diffusion_outputs = output
 
-        # AR part post-processing
-        ar_internal = await self._agent_loop_ar_postprocess(ar_output, diffusion_outputs, validate=validate, **kwargs)
-
-        # Diffusion part post-processing
+        # Diffusion post-processing (single reward worker; MultiVisualRewardManager scores AR + DiT).
         diffusion_internals: list[_InternalDiffusionAgentLoopOutput] = []
         for diffusion_output in diffusion_outputs:
             diffusion_output.prompt_ids = ar_output.prompt_ids  # use original prompt for reward
@@ -324,12 +309,14 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             )
             diffusion_internals.append(diffusion_internal)
 
+        ar_internal = await self._agent_loop_ar_postprocess(ar_output, validate=validate, **kwargs)
+        self._apply_ar_reward_from_diffusion_internals(ar_output, ar_internal, diffusion_internals)
+
         return ar_internal, diffusion_internals
 
     async def _agent_loop_ar_postprocess(
         self,
         output: ARAgentLoopOutput,
-        diffusion_outputs: list[DiffusionAgentLoopOutput],
         validate: bool = False,
         **kwargs,
     ) -> _InternalARAgentLoopOutput:
@@ -385,20 +372,13 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
                 ar_response_logprobs = ar_response_logprobs.unsqueeze(0)
 
         prompt_ids = prompt_output["input_ids"]  # padded prompt ids
-        await self._compute_ar_score(
-            output,
-            prompt_ids,
-            diffusion_outputs,
-            kwargs=kwargs,
-            validate=validate,
-        )
 
         extra_fields = dict(output.extra_fields)
         extra_fields["raw_prompt"] = kwargs["raw_prompt"]
         if "text_encoder_responses" not in extra_fields:
             extra_fields["text_encoder_responses"] = output.refined_prompt
-        if "reward_extra_info" in output.extra_fields:
-            extra_fields["reward_extra_info"] = output.extra_fields["reward_extra_info"]
+        # if "reward_extra_info" in output.extra_fields:
+        #     extra_fields["reward_extra_info"] = output.extra_fields["reward_extra_info"]
 
         return _InternalARAgentLoopOutput(
             prompt_ids=prompt_ids,
@@ -412,63 +392,63 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             ar_reward_score=output.ar_reward_score,
             num_turns=output.num_turns,
             metrics=output.metrics,
-            extra_fields=output.extra_fields,
+            extra_fields=extra_fields,
         )
 
-    async def _compute_ar_score(
+    def _apply_ar_reward_from_diffusion_internals(
         self,
         output: ARAgentLoopOutput,
-        prompts: torch.Tensor,
-        diffusion_outputs: list[DiffusionAgentLoopOutput],
-        kwargs,
-        validate: bool = False,
-    ):
-        """Compute image-grounded AR reward scores using diffusion prompts and images.
+        ar_internal: _InternalARAgentLoopOutput,
+        diffusion_internals: list[_InternalDiffusionAgentLoopOutput],
+    ) -> None:
+        """Populate AR ``rm_scores`` from per-image ``reward/ar`` in diffusion reward extras.
 
-        AR and DiT rewards share the same inputs: padded input ``prompts`` and
-        ``response_diffusion_output``. When multiple diffusion samples exist per AR
-        rollout, scores are averaged into one AR reward.
+        Mirrors ``PolicyGradientRayTrainer._extract_ar_reward_tensor`` for a single AR row
+        and ``len(diffusion_internals)`` diffusion samples.
         """
-        ar_enable_async_reward = self.ar_reward_loop_worker_handles is not None
-        if output.ar_reward_score is not None or not ar_enable_async_reward or not diffusion_outputs:
+        if output.ar_reward_score is not None or self.reward_loop_worker_handles is None or not diffusion_internals:
             return
 
-        timing = {}
-        ar_reward_scores: list[float] = []
-        with simple_timer("compute_score", timing):
-            for diffusion_output in diffusion_outputs:
-                batch = TensorDict(
-                    {
-                        "prompts": prompts,  # [1, prompt_length], padded input raw prompt ids
-                        "responses": diffusion_output.response_diffusion_output.unsqueeze(
-                            0
-                        ),  # [1, C, H, W] or [1, T, C, H, W]
-                    },
-                    batch_size=1,
-                )
-                non_tensor_batch = {
-                    **{k: np.array([v]) for k, v in kwargs.items()},
-                    "__num_turns__": np.array([output.num_turns]),
-                    "tool_extra_fields": np.array([diffusion_output.extra_fields], dtype=object),
-                }
+        reward_extra_infos = [item.extra_fields.get("reward_extra_info", {}) for item in diffusion_internals]
+        if not all(AR_REWARD_KEY in info for info in reward_extra_infos):
+            raise AssertionError(
+                "`ar` must be used as reward function name for ar reward computation when using "
+                "MultiVisualRewardManager"
+            )
 
-                data = DataProto(
-                    batch=batch,
-                    non_tensor_batch=non_tensor_batch,
-                    meta_info={"validate": validate},
-                )
-                selected_ar_reward_loop_worker_handle = random.choice(self.ar_reward_loop_worker_handles)
-                result = await selected_ar_reward_loop_worker_handle.compute_score.remote(data)
-                ar_reward_scores.append(result["reward_score"])
-                if output.extra_fields.get("reward_extra_info") is not None:
-                    output.extra_fields["reward_extra_info"].update(result["reward_extra_info"])
-                else:
-                    output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
+        avg_size = len(diffusion_internals)
+        ar_per_image_scores = np.array([float(info[AR_REWARD_KEY]) for info in reward_extra_infos], dtype=np.float32)
+        ar_reward_score = float(ar_per_image_scores.mean())
+        output.ar_reward_score = ar_reward_score
+        ar_internal.ar_reward_score = ar_reward_score
 
-        output.ar_reward_score = float(np.mean(ar_reward_scores))  # average score per prompt
-        if "reward_extra_info" in output.extra_fields:
-            output.extra_fields["reward_extra_info"] = output.extra_fields["reward_extra_info"]
-        output.metrics.compute_score = timing["compute_score"]
+        ar_reward_extra_info: dict[str, Any] = {AR_REWARD_KEY: ar_reward_score}
+        for key in reward_extra_infos[0].keys():
+            if key == AR_REWARD_KEY or AR_REWARD_KEY not in key:
+                continue
+            sub_scores = np.array([info[key] for info in reward_extra_infos], dtype=object)
+            if sub_scores.ndim == 1:
+                sub_scores = sub_scores.reshape(-1, 1)
+            first_val = sub_scores.flat[0]
+            is_number = isinstance(first_val, np.number) or isinstance(first_val, (int, float))
+            if is_number:
+                numeric = np.array([info[key] for info in reward_extra_infos], dtype=np.float32)
+                if numeric.ndim == 1:
+                    numeric = numeric.reshape(-1, 1)
+                sub_reward = numeric.reshape(1, avg_size, numeric.shape[1]).mean(axis=1)[0]
+                ar_reward_extra_info[key] = sub_reward[0].item()
+            else:
+                ar_reward_extra_info[key] = sub_scores.reshape(-1)[0]
+
+        ar_internal.extra_fields["reward_extra_info"] = dict(ar_reward_extra_info)
+
+        for diffusion_internal in diffusion_internals:
+            reward_extra_info = diffusion_internal.extra_fields.get("reward_extra_info")
+            if not reward_extra_info:
+                continue
+            for key in list(reward_extra_info.keys()):
+                if AR_REWARD_KEY in key:
+                    del reward_extra_info[key]
 
     def _postprocess_ar(
         self,
