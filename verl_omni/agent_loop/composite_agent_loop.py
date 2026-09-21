@@ -430,7 +430,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             if sub_scores.ndim == 1:
                 sub_scores = sub_scores.reshape(-1, 1)
             first_val = sub_scores.flat[0]
-            is_number = isinstance(first_val, np.number) or isinstance(first_val, (int, float))
+            is_number = isinstance(first_val, np.number) or isinstance(first_val, (int | float))
             if is_number:
                 numeric = np.array([info[key] for info in reward_extra_infos], dtype=np.float32)
                 if numeric.ndim == 1:
