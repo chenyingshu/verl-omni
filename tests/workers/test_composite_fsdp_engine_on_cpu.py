@@ -104,10 +104,11 @@ class TestBuildARHfModelConfig:
         engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
         dm_cfg = _make_diffusion_model_config(
             override_config={"attn_implementation": "sdpa"},
-            lora_rank=8,
-            lora_alpha=16,
         )
         object.__setattr__(dm_cfg, "local_path", self.tmp_dir)
+        object.__setattr__(dm_cfg, "lora_rank", 8)
+        object.__setattr__(dm_cfg, "lora_alpha", 16)
+        object.__setattr__(dm_cfg, "exclude_modules", ".*visual.*")
         local_te_dir = os.path.join(self.tmp_dir, "text_encoder")
         self.config.save_pretrained(local_te_dir)
         hf_cfg = engine.build_ar_hf_model_config(dm_cfg)
@@ -117,6 +118,7 @@ class TestBuildARHfModelConfig:
         assert hf_cfg.override_config == {"attn_implementation": "sdpa"}
         assert hf_cfg.lora_rank == 8
         assert hf_cfg.lora_alpha == 16
+        assert hf_cfg.exclude_modules == ".*visual.*"
 
     def test_respects_custom_text_encoder_subfolder(self):
         engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
@@ -314,9 +316,18 @@ class TestCompositeEngineDelegation:
 
     def test_get_per_tensor_param_prefixes_ar_weights(self):
         engine = _make_composite_engine()
+        from verl_omni.workers.config.diffusion.model import DiffusionModelConfig
+
+        model_cfg = object.__new__(DiffusionModelConfig)
+        object.__setattr__(model_cfg, "lora_rank", 0)
+        object.__setattr__(model_cfg, "lora_alpha", 16)
+        object.__setattr__(model_cfg, "target_modules", "all-linear")
+        object.__setattr__(model_cfg, "target_parameters", None)
+        object.__setattr__(model_cfg, "exclude_modules", None)
+        engine.model_config = model_cfg
         engine.dit_engine.get_per_tensor_param.return_value = (
             iter([("transformer.weight", torch.tensor(1.0))]),
-            {"default": {}},
+            None,
         )
         engine.ar_engine.get_per_tensor_param.return_value = (
             iter([("lm_head.weight", torch.tensor(2.0))]),
@@ -328,7 +339,33 @@ class TestCompositeEngineDelegation:
 
         assert merged["transformer.weight"] == pytest.approx(1.0)
         assert merged["text_encoder.lm_head.weight"] == pytest.approx(2.0)
-        assert peft == {"default": {}}
+        assert peft is None
+
+    def test_get_per_tensor_param_merges_shared_peft(self):
+        engine = _make_composite_engine()
+        from verl_omni.workers.config.diffusion.model import DiffusionModelConfig
+
+        model_cfg = object.__new__(DiffusionModelConfig)
+        object.__setattr__(model_cfg, "lora_rank", 8)
+        object.__setattr__(model_cfg, "lora_alpha", 16)
+        object.__setattr__(model_cfg, "target_modules", "all-linear")
+        object.__setattr__(model_cfg, "target_parameters", None)
+        object.__setattr__(model_cfg, "exclude_modules", ".*visual.*")
+        engine.model_config = model_cfg
+        engine.dit_engine.get_per_tensor_param.return_value = (iter([]), {"r": 8, "lora_alpha": 16})
+        engine.ar_engine.get_per_tensor_param.return_value = (iter([]), {"r": 8, "lora_alpha": 16})
+
+        _, peft = engine.get_per_tensor_param()
+
+        assert peft["r"] == 8
+        assert peft["lora_alpha"] == 16
+        assert peft["exclude_modules"] == ".*visual.*"
+
+    def test_to_offloads_both_sub_engines(self):
+        engine = _make_composite_engine()
+        engine.to("cpu", model=True, optimizer=False, grad=False)
+        engine.ar_engine.to.assert_called_once_with(device="cpu", model=True, optimizer=False, grad=False)
+        engine.dit_engine.to.assert_called_once_with(device="cpu", model=True, optimizer=False, grad=False)
 
 
 class TestCompositeEngineCtx:

@@ -1560,15 +1560,15 @@ class CompositeFSDPEngine(BaseEngine):
         text_encoder_path = os.path.join(diffusion_model_config.local_path, subfolder)
         return HFModelConfig(
             path=text_encoder_path,
-            trust_remote_code=diffusion_model_config.ar.trust_remote_code,
-            use_shm=diffusion_model_config.ar.use_shm,
-            enable_gradient_checkpointing=diffusion_model_config.ar.enable_gradient_checkpointing,
-            lora_rank=diffusion_model_config.ar.lora_rank,
-            lora_alpha=diffusion_model_config.ar.lora_alpha,
-            target_modules=diffusion_model_config.ar.target_modules,
-            target_parameters=diffusion_model_config.ar.target_parameters,
-            exclude_modules=diffusion_model_config.ar.exclude_modules,
-            lora_adapter_path=getattr(diffusion_model_config.ar, "lora_adapter_path", None),
+            trust_remote_code=diffusion_model_config.trust_remote_code,
+            use_shm=diffusion_model_config.use_shm,
+            enable_gradient_checkpointing=diffusion_model_config.enable_gradient_checkpointing,
+            lora_rank=diffusion_model_config.lora_rank,
+            lora_alpha=diffusion_model_config.lora_alpha,
+            target_modules=diffusion_model_config.target_modules,
+            target_parameters=diffusion_model_config.target_parameters,
+            exclude_modules=diffusion_model_config.exclude_modules,
+            lora_adapter_path=getattr(diffusion_model_config, "lora_adapter_path", None),
             load_tokenizer=False,
             override_config=diffusion_model_config.ar.override_config,
         )
@@ -1615,7 +1615,7 @@ class CompositeFSDPEngine(BaseEngine):
         # TODO: (susan) delete after fixing bug
         # if self.ar_engine.module
         self.ar_engine.module.model.forward = qwen2_vl_base_forward.__get__(self.ar_engine.module.model)
-        print("Monkey patch verl.modles.transformers.qwen2_vl._get_input_embeds")  # line 388-394
+        print("Monkey patch verl.models.transformers.qwen2_vl._get_input_embeds")  # line 388-394
 
     def next_stage(self) -> None:
         """Switch stage and engine"""
@@ -1627,7 +1627,7 @@ class CompositeFSDPEngine(BaseEngine):
 
     @property
     def is_param_offload_enabled(self) -> bool:
-        return self.current_engine.is_param_offload_enabled()
+        return self.current_engine.is_param_offload_enabled
 
     @property
     def is_optimizer_offload_enabled(self) -> bool:
@@ -1675,7 +1675,8 @@ class CompositeFSDPEngine(BaseEngine):
         return self.current_engine.is_mp_src_rank_with_outputs()
 
     def to(self, device: str, model: bool = True, optimizer: bool = True, grad: bool = True):
-        self.current_engine.to(device=device, model=model, optimizer=optimizer, grad=grad)
+        self.ar_engine.to(device=device, model=model, optimizer=optimizer, grad=grad)
+        self.dit_engine.to(device=device, model=model, optimizer=optimizer, grad=grad)
 
     def save_checkpoint(
         self,
@@ -1725,6 +1726,75 @@ class CompositeFSDPEngine(BaseEngine):
             )
         torch.distributed.barrier()
 
+    def _merge_composite_peft_configs(
+        self,
+        dit_peft: dict[str, Any] | None,
+        ar_peft: dict[str, Any] | None,
+        model_config: DiffusionModelConfig | None = None,
+    ) -> dict[str, Any] | None:
+        """Build one rollout ``peft_config`` with shared hyperparameters plus per-component exports."""
+        if dit_peft is None and ar_peft is None:
+            return None
+
+        merged: dict[str, Any] = {}
+        if model_config is not None and model_config.lora_rank > 0:
+            default_config = {  # shared basic configs
+                "r": model_config.lora_rank,
+                "lora_alpha": model_config.lora_alpha,
+                "target_modules": model_config.target_modules,
+                "target_parameters": model_config.target_parameters,
+                "exclude_modules": model_config.exclude_modules,
+                "bias": "none",
+            }
+            merged.update(default_config)
+
+        for export in (dit_peft, ar_peft):
+            if export is None:
+                continue
+            for key, value in export.items():
+                if key not in merged:
+                    merged[key] = value
+                else:
+                    if isinstance(merged[key], dict) and isinstance(value, dict):
+                        merged[key].update(value)
+                    elif isinstance(merged[key], list) and isinstance(value, list):
+                        merged[key].extend(value)
+                    else:
+                        assert merged[key] == value, (
+                            f"AR and DiT PEFT configs cannot be merged for {key}:\n {merged[key]}\n and \n {value}"
+                        )
+
+        return merged
+
+    @property
+    def has_lora(self) -> bool:
+        """Return True if either AR or DiT sub-engine carries a default LoRA adapter."""
+        for sub_engine in (self.ar_engine, self.dit_engine):
+            module = getattr(sub_engine, "module", None)
+            peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
+            if peft_model is not None and getattr(peft_model, "peft_config", None):
+                if peft_model.peft_config.get("default") is not None:
+                    return True
+        return False
+
+    def get_lora_peft_config(self) -> dict[str, Any] | None:
+        """PEFT metadata for colocated diffusion rollout LoRA apply."""
+        dit_module = getattr(self.dit_engine, "module", None)
+        dit_peft_model = getattr(dit_module, "_fsdp_wrapped_module", dit_module) if dit_module is not None else None
+        # no lora peft config
+        if dit_peft_model is None or not hasattr(dit_peft_model, "peft_config"):
+            return None
+
+        dit_peft_config = dit_peft_model.peft_config.get("default", None)
+        ar_module = getattr(self.ar_engine, "module", None)
+        ar_peft_model = getattr(ar_module, "_fsdp_wrapped_module", ar_module) if ar_module is not None else None
+        ar_peft_config = ar_peft_model.peft_config.get("default", None)
+
+        peft_config = self._merge_composite_peft_configs(dit_peft_config, ar_peft_config, self.model_config)
+        result = peft_config.to_dict() if peft_config is not None else None
+
+        return result
+
     def get_per_tensor_param(
         self, layered_summon=False, base_sync_done=False, adapter_name: str | None = None, **kwargs
     ):
@@ -1746,8 +1816,7 @@ class CompositeFSDPEngine(BaseEngine):
             for name, tensor in ar_params:
                 yield f"text_encoder.{name}", tensor
 
-        # TODO: (susan) merge ar and dit peft dicts
-        return merged(), dit_peft or ar_peft
+        return merged(), self._merge_composite_peft_configs(dit_peft, ar_peft, self.model_config)
 
     def disable_adapter(self):
         ar_ctx = self.ar_engine.disable_adapter()

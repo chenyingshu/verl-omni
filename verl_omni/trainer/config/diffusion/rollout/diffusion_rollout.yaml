@@ -226,10 +226,10 @@ val_kwargs:
 
   # Optional. AR part rollout configuration for validation
   ar:
-    
+
     # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
     _target_: verl_omni.workers.config.diffusion.DiffusionARConfig
-    
+
     # Sampling temperature for rollout.
     temperature: ${oc.select:actor_rollout_ref.rollout.ar.temperature,1.0}
 
@@ -325,7 +325,7 @@ pipeline:
 
 # Optional. AR part rollout use.
 ar:
-    
+
   # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl_omni.workers.config.diffusion.DiffusionARConfig
 
@@ -352,7 +352,6 @@ ar_calculate_log_probs: False
 
 # Named adapter used by rollout generation
 rollout_adapter: default
-
 
 # [Experimental] agent loop based rollout configs
 agent:

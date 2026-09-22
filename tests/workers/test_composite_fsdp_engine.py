@@ -125,7 +125,7 @@ def create_composite_training_config(
     actor_config: FSDPDiffusionActorConfig = omega_conf_to_dataclass(cfg)
 
     training_config = TrainingWorkerConfig(
-        model_type="diffusion_composite_model", # new
+        model_type="diffusion_composite_model",  # new
         model_config=model_config,
         engine_config=actor_config.engine,
         optimizer_config=actor_config.optim,
