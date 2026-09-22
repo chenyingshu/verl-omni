@@ -322,7 +322,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
                 for e in refined_prompts
             ]
 
-            image = torch.empty((1, 3, 1, 1))  # dummy image
+            image = torch.zeros((1, 3, 1, 1), device=self.device).float()  # dummy image
             result = rollout_output(
                 media=image,
                 rl={

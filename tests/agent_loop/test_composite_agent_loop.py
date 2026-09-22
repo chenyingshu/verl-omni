@@ -45,11 +45,11 @@ class _FakeRemoteComputeScore:
 
     async def remote(self, data: DataProto) -> dict:
         self.received_data = data
-        return {
-            "reward_score": 2.0,
+        return {  # fix to use weights dit:1.0, ar: 0.0 for combined score
+            "reward_score": 1.5,
             "reward_extra_info": {
-                "reward/combined": 2.0,
-                "reward/dit": 1.0,
+                "reward/combined": 1.5,
+                "reward/dit": 1.5,
                 "reward/dit/dit_msg": "dummy_dit_reward_info",
                 "reward/ar": 1.0,
                 "reward/ar/ar_msg": "dummy_ar_reward_info",

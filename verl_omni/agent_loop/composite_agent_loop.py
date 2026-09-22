@@ -173,7 +173,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
 
         is_validate = batch.meta_info.get("validate", False)
         per_rollout_seeds: Optional[list[int]] = None
-        diffusion_n = config.n
+        diffusion_n = config.val_kwargs.n if is_validate else config.n
 
         if is_validate:
             sampling_params.update(_config_to_sampling_dict(config.val_kwargs.pipeline))
