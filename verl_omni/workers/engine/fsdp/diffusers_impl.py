@@ -39,7 +39,6 @@ from verl.utils.fsdp_utils import (
     CPUOffloadPolicy,
     FSDPModule,
     MixedPrecisionPolicy,
-    apply_fsdp2,
     fsdp2_clip_grad_norm_,
     fsdp2_load_full_state_dict,
     fsdp_version,
@@ -71,7 +70,8 @@ from verl_omni.pipelines.utils import (
     prepare_model_inputs,
     prepare_noisy_latents,
 )
-from verl_omni.utils.fsdp_utils import collect_lora_params
+from verl_omni.utils.diffusion_compile import _maybe_compile_repeated_blocks
+from verl_omni.utils.fsdp_utils import apply_fsdp2, collect_lora_params
 from verl_omni.workers.config import DiffusionModelConfig
 from verl_omni.workers.engine.lora_adapter_mixin import LoRAAdapterMixin
 
@@ -351,6 +351,14 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
         model_cls = DiffusionModelBase.get_class(self.model_config)
         preserve_fp32_modules = model_cls.preserve_fp32_modules()
 
+        # Adapters may declare frozen subtrees to keep unsharded (fsdp2 only).
+        ignored_names = list(model_cls.get_fsdp_ignored_module_names(self.model_config))
+        if ignored_names and self.engine_config.strategy != "fsdp2":
+            raise NotImplementedError(
+                f"{type(self).__name__}: FSDP2-ignored module names require strategy=fsdp2, "
+                f"got {self.engine_config.strategy!r}."
+            )
+
         # None preserves declared fp32 islands; a real dtype lets FSDP cast
         # forward inputs and flatten parameters using the configured dtype.
         param_dtype = _fsdp_param_dtype(
@@ -419,7 +427,7 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
                 "reshard_after_forward": self.engine_config.reshard_after_forward,
             }
             full_state = module.state_dict()
-            apply_fsdp2(module, fsdp_kwargs, self.engine_config)
+            apply_fsdp2(module, fsdp_kwargs, self.engine_config, ignored_names=ignored_names)
             fsdp2_load_full_state_dict(module, full_state, fsdp_mesh, offload_policy)
         else:
             raise NotImplementedError(f"Unknown strategy {self.engine_config.strategy}")
@@ -500,6 +508,12 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
             module.enable_parallelism(
                 config=ContextParallelConfig(ulysses_degree=sp_size, mesh=self.ulysses_device_mesh)
             )
+
+        # Compile only after all structural/trainability mutations and before
+        # FSDP2 registers its per-block sharding hooks. Diffusers activation
+        # checkpointing calls block.__call__, so recomputation also uses the
+        # compiled regional forward/backward.
+        _maybe_compile_repeated_blocks(module, self.model_config, self.engine_config)
 
         # Load diffusion scheduler
         scheduler = self._build_scheduler()
@@ -738,7 +752,6 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
                 load_fsdp_model_to_gpu(self.module)
             if optimizer and self.optimizer is not None:
                 load_fsdp_optimizer(self.optimizer, device)
-            gc.collect()
         elif device == "cpu":
             if model:
                 offload_fsdp_model_to_cpu(self.module)
@@ -870,6 +883,72 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
         peft_config_dict = peft_config.to_dict() if peft_config is not None else None
         return per_tensor_param, peft_config_dict
 
+    def _prepare_timestep_staging(self, data: TensorDict, timesteps_key: str) -> tuple[dict[str, int], list[str]]:
+        """Validate CPU inputs and describe the Qwen-Image fields consumed by each step."""
+        timesteps = data.get(timesteps_key, None)
+        if not isinstance(timesteps, torch.Tensor) or timesteps.ndim != 2 or 0 in timesteps.shape:
+            raise ValueError("Timestep staging requires a nonempty (batch, timesteps) tensor.")
+        num_steps = timesteps.shape[1]
+        shared_keys = [
+            "prompt_embeds",
+            "prompt_embeds_mask",
+            "negative_prompt_embeds",
+            "negative_prompt_embeds_mask",
+            "height",
+            "width",
+            "vae_scale_factor",
+            "gradient_accumulation_steps",
+            "sp_size",
+        ]
+        if timesteps_key == "all_timesteps":
+            latents = data.get("all_latents", None)
+            if not isinstance(latents, torch.Tensor) or latents.ndim != 4 or latents.shape[1] != num_steps + 1:
+                raise ValueError("Staged PPO all_latents must have shape (batch, timesteps + 1, tokens, channels).")
+            required = ("all_timesteps", "all_latents", "old_log_probs", "advantages", "prompt_embeds")
+            step_fields = dict.fromkeys(
+                (
+                    "all_timesteps",
+                    "old_log_probs",
+                    "advantages",
+                    "ref_log_prob",
+                    "ref_prev_sample_mean",
+                    "teacher_prev_sample_mean",
+                    "old_prev_sample_mean",
+                    "rollout_is_weights",
+                ),
+                1,
+            )
+            step_fields["all_latents"] = 2
+        else:
+            latents = data.get("latents_clean", None)
+            if not isinstance(latents, torch.Tensor) or latents.ndim != 3:
+                raise ValueError("Staged NFT latents_clean must have shape (batch, tokens, channels).")
+            required = ("train_timesteps", "reward_prob", "latents_clean", "prompt_embeds", "prompt_embeds_mask")
+            step_fields = {"train_timesteps": 1, "reward_prob": 1}
+            shared_keys.append("latents_clean")
+            noise = data.get("forward_noise", None)
+            if noise is not None:
+                if not isinstance(noise, torch.Tensor):
+                    raise ValueError("Staged NFT forward_noise must be a tensor.")
+                if noise.shape == latents.shape:
+                    shared_keys.append("forward_noise")
+                elif noise.shape == (latents.shape[0], num_steps, *latents.shape[1:]):
+                    step_fields["forward_noise"] = 1
+                else:
+                    raise ValueError("Staged NFT forward_noise must match latents_clean or add a timestep dimension.")
+        for key in required:
+            if not isinstance(data.get(key, None), torch.Tensor):
+                raise ValueError(f"Timestep staging requires tensor input {key!r}.")
+        step_fields = {key: width for key, width in step_fields.items() if data.get(key, None) is not None}
+        for key, width in step_fields.items():
+            value = data[key]
+            if not isinstance(value, torch.Tensor) or value.ndim < 2 or value.shape[1] != num_steps + width - 1:
+                raise ValueError(f"Staged input {key!r} has an incompatible timestep dimension.")
+        for key, value in data.select(*shared_keys, *step_fields, strict=False).items():
+            if isinstance(value, torch.Tensor) and (value.device.type != "cpu" or value.requires_grad):
+                raise ValueError(f"Timestep staging requires CPU inputs without gradients, got {key!r}.")
+        return step_fields, shared_keys
+
     def _merged_lora_per_tensor_param(self):
         """Stream merged (base + LoRA) weights for rollout weight sync.
 
@@ -903,6 +982,12 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
                 offload_fsdp_model_to_cpu(self.module)
             log_gpu_memory_usage("After offload_fsdp_model_to_cpu", logger=logger)
 
+    def _gradient_sync_context(self, *, is_last_micro_batch: bool):
+        """Reuse verl FSDPEngine: skip reduce-scatter until the last accumulation step."""
+        from verl.workers.engine.fsdp.transformer_impl import FSDPEngine
+
+        return FSDPEngine._gradient_sync_context(self, is_last_micro_batch=is_last_micro_batch)
+
     def _run_forward_backward_batch(
         self,
         data: TensorDict,
@@ -911,7 +996,11 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
         *,
         timesteps_key: str,
     ) -> dict:
+        stage_inputs = tu.get_non_tensor_data(data, "enable_timestep_staging", default=False) and not forward_only
+        if stage_inputs:
+            step_fields, shared_keys = self._prepare_timestep_staging(data, timesteps_key)
         num_timesteps = int(data[timesteps_key].shape[1])
+        return_model_output = tu.get_non_tensor_data(data, "return_model_output", default=False)
         tu.assign_non_tensor(data, sp_size=self.ulysses_sequence_parallel_size)
         tu.assign_non_tensor(data, use_dynamic_bsz=False)
 
@@ -922,22 +1011,47 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
         gradient_accumulation_steps = len(micro_batches) * num_timesteps
         output_lst = []
         ctx = torch.no_grad() if forward_only else nullcontext()
+        defer_sync = (not forward_only) and tu.get_non_tensor_data(
+            data, "use_no_sync_for_gradient_accumulation", default=False
+        )
+        n_micro = len(micro_batches)
 
-        for micro_batch in micro_batches:
-            micro_batch = micro_batch.to(get_device_id())
+        for micro_idx, micro_batch in enumerate(micro_batches):
             tu.assign_non_tensor(micro_batch, gradient_accumulation_steps=gradient_accumulation_steps)
+            if stage_inputs:
+                shared_batch = micro_batch.select(*shared_keys, strict=False).to(get_device_id())
+            else:
+                micro_batch = micro_batch.to(get_device_id())
             meta_info_lst = {"model_output": [], "loss": [], "metrics": []}
             # Forward and backward for each timestep
             with ctx:
                 for step in range(num_timesteps):
-                    loss, meta_info = self.forward_step(
-                        micro_batch, loss_function=loss_function, forward_only=forward_only, step=step
-                    )
-                    if not forward_only:
-                        loss.backward()
+                    is_last = micro_idx == n_micro - 1 and step == num_timesteps - 1
+                    sync_ctx = self._gradient_sync_context(is_last_micro_batch=is_last) if defer_sync else nullcontext()
+                    if stage_inputs:
+                        step_batch = shared_batch.clone(recurse=False)
+                        for key, width in step_fields.items():
+                            step_batch[key] = micro_batch[key][:, step : step + width].to(get_device_id())
+                    else:
+                        step_batch = micro_batch
+                    with sync_ctx:
+                        loss, meta_info = self.forward_step(
+                            step_batch,
+                            loss_function=loss_function,
+                            forward_only=forward_only,
+                            step=0 if stage_inputs else step,
+                        )
+                        if not forward_only:
+                            loss.backward()
+                            if not return_model_output:
+                                # Training consumers only need metrics; do not retain every timestep's latents.
+                                meta_info.pop("model_output", None)
                     for key, val in meta_info.items():
                         meta_info_lst[key].append(val)
+                    del step_batch
             output_lst.append(meta_info_lst)
+            if stage_inputs:
+                del shared_batch
 
         # postprocess and return
         return self.postprocess_batch_func(output_lst=output_lst, indices=indices, data=data)

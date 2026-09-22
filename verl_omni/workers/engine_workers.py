@@ -34,7 +34,7 @@ from verl.single_controller.base.decorator import Dispatch, make_nd_compute_data
 from verl.trainer.distillation import distillation_ppo_loss, is_distillation_enabled
 from verl.utils import tensordict_utils as tu
 from verl.utils.config import omega_conf_to_dataclass
-from verl.utils.device import get_device_name, is_npu_available, set_expandable_segments
+from verl.utils.device import get_device_name, get_torch_device, is_npu_available, set_expandable_segments
 from verl.utils.distributed import initialize_global_process_group_ray, set_numa_affinity
 from verl.utils.flops_counter import FlopsCounter
 from verl.utils.import_utils import import_external_libs
@@ -44,6 +44,7 @@ from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerCon
 from verl.utils.py_functional import append_to_dict
 from verl.utils.tensordict_utils import maybe_fix_3d_position_ids
 from verl.utils.torch_functional import allgather_dict_into_dict
+from verl.utils.tracking import RLInsightLogger
 from verl.workers.config import (
     ActorConfig,
     DistillationConfig,
@@ -851,6 +852,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     mesh_name="teacher", **next(iter(self.teachers.values())).get_dispatch_collect()
                 )
 
+        # Rollout weight-sync knobs. Initialized for every role, not only when
+        # "rollout" is in self.role: with a separate rollout, update_weights()
+        # and the LoRA gather run on the actor worker and must not depend on
+        # rollout-role-only attributes.
+        self._init_weight_sync_knobs(model_config)
+
         # 3. build rollout engine
         if "rollout" in self.role:
             rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
@@ -874,12 +881,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 config=rollout_config, model_config=model_config, device_mesh=rollout_device_mesh
             )
 
-            # used for LoRA (base_sync_done is unused in merge-only mode but kept for Phase 2 adapter path)
-            self.base_sync_done: bool = "dummy" not in self.config.rollout.load_format
-            self.layered_summon = self.config.rollout.get("layered_summon", False)
-            self.peft_merge: bool = model_config.lora.get("merge", False)
-            self._zmq_update_seq = 0
-
         # 4. build checkpoint engine
         if "actor" in self.role:
             checkpoint_engine_config = omega_conf_to_dataclass(self.config.rollout.checkpoint_engine)
@@ -895,6 +896,24 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
         aggressive_empty_cache(force_sync=True)
+
+    def _init_weight_sync_knobs(self, model_config):
+        """Set rollout weight-sync state needed by actor-side methods.
+
+        update_weights() and the LoRA gather read these on workers whose role
+        may not include "rollout" (separate rollout layout), so they are derived
+        from config for every role instead of only when building the rollout
+        engine.
+        """
+        # LoRA: True while the rollout already holds the base weights, so
+        # adapter-only syncs can skip resending them. Only a dummy load_format
+        # starts False (the rollout never loaded real base weights).
+        self.base_sync_done: bool = "dummy" not in self.config.rollout.load_format
+        self.layered_summon = self.config.rollout.get("layered_summon", False)
+        # diffusion-only dual-adapter knob; the omni rollout config has no such field
+        self.rollout_adapter: str = self.config.rollout.get("rollout_adapter", "default")
+        self.peft_merge: bool = model_config.lora.get("merge", False)
+        self._zmq_update_seq = 0
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="ref"))
     @DistProfiler.annotate(color="olive", role="infer_ref_batch")
@@ -919,10 +938,31 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output.cpu() if output is not None else None
 
+    # Upstream v1 names: verl's PPO v1 trainers call compute_log_prob / compute_ref_log_prob;
+    # the diffusion trainers call the infer_* names above.
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="ref"))
+    @DistProfiler.annotate(color="olive", role="ref_compute_log_prob")
+    @_with_routing_replay_flag(enabled=False)
+    def compute_ref_log_prob(self, data: TensorDict) -> TensorDict:
+        output = self.ref.infer_batch(data=data)
+        return output.cpu() if output is not None else None
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="blue", role="actor_compute_log_prob")
+    @_with_routing_replay_flag(enabled=True)
+    def compute_log_prob(self, data: TensorDict) -> TensorDict:
+        output = self.actor.infer_batch(data)
+        return output.cpu() if output is not None else None
+
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
     @_with_routing_replay_flag(enabled=True)
     def update_actor(self, data: TensorDict) -> TensorDict:
+        tu.assign_non_tensor(data, enable_timestep_staging=self.config.actor.get("enable_timestep_staging", False))
+        tu.assign_non_tensor(
+            data,
+            use_no_sync_for_gradient_accumulation=self.config.actor.get("use_no_sync_for_gradient_accumulation", False),
+        )
         output = self.actor.train_mini_batch(data=data)
         return output.cpu() if output is not None else None
 
@@ -1016,7 +1056,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         start = time.perf_counter()
         if self.actor.engine.is_param_offload_enabled:
             self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().synchronize()
+        get_torch_device().empty_cache()
         if timings is not None:
             timings["offload_actor_to_cpu"] = time.perf_counter() - start
 
@@ -1033,7 +1074,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
             layered_summon=self.layered_summon,
             base_sync_done=True,
-            adapter_name=self.config.rollout.rollout_adapter,
+            adapter_name=self.rollout_adapter,
         )
         lora_weights = {name: tensor for name, tensor in per_tensor_param}
         if timings is not None:
@@ -1082,23 +1123,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             actor_has_lora = _actor_has_lora_adapter(self.actor.engine, peft_merge=self.peft_merge)
 
             if actor_has_lora and not self.peft_merge:
-                logger.warning(
-                    "LORA_SYNC_PROOF actor send mode=adapter_only backend=%s global_steps=%s adapter=%s",
+                logger.debug(
+                    "adapter-only LoRA send: backend=%s global_steps=%s adapter=%s",
                     effective_mode,
                     global_steps,
-                    self.config.rollout.rollout_adapter,
+                    self.rollout_adapter,
                 )
                 per_tensor_param, _ = self.actor.engine.get_per_tensor_param(
                     base_sync_done=True,
-                    adapter_name=self.config.rollout.rollout_adapter,
+                    adapter_name=self.rollout_adapter,
                 )
-                await self.checkpoint_engine.send_weights(per_tensor_param)
+                with RLInsightLogger.trace_state("update_weights", state_lane_id=f"rank_{self.rank}"):
+                    await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
                 return
 
-            per_tensor_param, _ = self.actor.engine.get_per_tensor_param(
-                adapter_name=self.config.rollout.rollout_adapter
-            )
-            await self.checkpoint_engine.send_weights(per_tensor_param)
+            per_tensor_param, _ = self.actor.engine.get_per_tensor_param(adapter_name=self.rollout_adapter)
+            with RLInsightLogger.trace_state("update_weights", state_lane_id=f"rank_{self.rank}"):
+                await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
             return
 
         # Per-component wall-clock timings (seconds) for monitoring.
@@ -1174,9 +1215,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 bucket_size_mb=bucket_size_mb,
                 use_shm=self.rollout.use_shm,
             )
-            await sender.async_send_weights(lora_weights.items())
-            if future is not None:
-                await future
+            with RLInsightLogger.trace_state("update_weights", state_lane_id=f"rank_{self.rank}"):
+                await sender.async_send_weights(lora_weights.items())
+                if future is not None:
+                    await future
+            # Mirror ServerAdapter.update_weights: reset caches and stamp the weight version.
+            if self.rollout.rollout_rank == 0 and self.rollout._ensure_server_handle():
+                await self.rollout.server_handle.clear_kv_cache.remote()
+                if global_steps is not None:
+                    await self.rollout.server_handle.set_global_steps.remote(global_steps)
             timings["update_weights_sync"] = time.perf_counter() - sync_start
             offloaded = True
         else:
@@ -1190,7 +1237,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
                 layered_summon=self.layered_summon,
                 base_sync_done=True,
-                adapter_name=self.config.rollout.rollout_adapter,
+                adapter_name=self.rollout_adapter,
             )
 
             do_lora_base_sync = False
@@ -1203,15 +1250,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 per_tensor_param_base, peft_config = self.actor.engine.get_per_tensor_param(
                     layered_summon=self.layered_summon,
                     base_sync_done=False,
-                    adapter_name=self.config.rollout.rollout_adapter,
+                    adapter_name=self.rollout_adapter,
                 )
                 await self.rollout.update_weights(
                     per_tensor_param_base, peft_config=peft_config, base_sync_done=False, global_steps=global_steps
                 )
 
-            await self.rollout.update_weights(
-                per_tensor_param, peft_config=peft_config, base_sync_done=True, global_steps=global_steps
-            )
+            with RLInsightLogger.trace_state("update_weights", state_lane_id=f"rank_{self.rank}"):
+                await self.rollout.update_weights(
+                    per_tensor_param, peft_config=peft_config, base_sync_done=True, global_steps=global_steps
+                )
 
         log_gpu_memory_usage("After update_weights", logger=logger)
 
@@ -1222,6 +1270,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             await offload_task
         elif not offloaded:
             self._offload_actor_and_empty_cache(timings)
+        log_gpu_memory_usage("After offload model to cpu", logger=logger)
 
         # 5. resume kv_cache
         if self.config.rollout.free_cache_engine:

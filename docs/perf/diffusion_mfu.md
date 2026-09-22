@@ -1,7 +1,7 @@
 (diffusion_mfu)=
 # Diffusion FLOPs / MFU
 
-Last updated: 08/29/2026
+Last updated: 09/06/2026
 
 VeRL-Omni reports **Model FLOPs Utilization (MFU)** for diffusion RL
 training using the same actor keys upstream
@@ -55,8 +55,9 @@ The registry (`verl_omni.utils.mfu.diffusion_flops_counter._REGISTRY`) currently
 | Qwen-Image | `QwenImagePipeline`, `QwenImagePipelineWithLogProb` | dual-stream joint full attention |
 | Stable Diffusion 3 / 3.5 (no `dual_attention_layers`) | `StableDiffusion3Pipeline`, `StableDiffusion3PipelineWithLogProb` | dual-stream joint full attention, `context_pre_only` last block |
 | Wan2.1 / Wan2.2 | `WanPipeline` | single-stream self-attention + cross-attention to text |
+| MiniMax-H3 | `MiniMaxH3Pipeline` | packed text/video/audio full self-attention with a text-only token refiner |
 
-Any other architecture (Bagel, Boogu-Image, LTX2, MiniMax-H3, SD3.5's
+Any other architecture (Bagel, Boogu-Image, LTX2, SD3.5's
 `dual_attention_layers` variant, Qwen-Image-Edit, Qwen3-Omni, ...) is not
 yet registered; `DiffusionFlopsCounter` degrades to `MFU=0` with a
 `RuntimeWarning` for those until an estimator is added. See [Adding a new
@@ -95,6 +96,7 @@ is no third bucket.
 | ControlNet | denoise-target latent **plus** ControlNet conditioning latent (same image-side concat) | text-encoder tokens |
 | Img2Vid (Wan2.2-I2V) | video latent tokens only | text tokens **plus** vision-encoder tokens — the reference image is encoded by a separate encoder and concatenated to the text-encoder output, so both go through the cross-attention KV |
 | Class-conditioned / unconditional (DiT class-cond) | image latent tokens | 0 (no prompt stream) |
+| MiniMax-H3 | video rows + audio rows + reference-condition rows | text rows; all rows are packed into one self-attention sequence |
 
 The joint attention term inside `estimate_flops` uses
 `(latent_seqlens[i] + prompt_seqlens[i]) ** 2` per sample — the

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import torch
-from tensordict import TensorDict
+from tensordict import NonTensorData, NonTensorStack, TensorDict
 from verl.experimental.agent_loop.agent_loop import AgentLoopMetrics
 from verl.protocol import DataProto
 from verl.utils import tensordict_utils as tu
@@ -212,6 +212,9 @@ async def test_tq_writer_preserves_allowlisted_non_tensor_trajectory_metadata(mo
         num_turns=2,
         extra_fields={
             "condition_image_latents": torch.zeros(1, 4096, 64),
+            "audio": torch.zeros(1, 1, 16),
+            "audio_sample_rate": 32_000,
+            "media_kind": "video",
             "img_shapes": img_shapes,
             "unrelated_metadata": "do-not-forward",
         },
@@ -233,9 +236,17 @@ async def test_tq_writer_preserves_allowlisted_non_tensor_trajectory_metadata(mo
     )
 
     field = captured["fields"][0]
-    assert field["extra_fields"]["img_shapes"] == img_shapes
+    assert field["extra_fields"] == {
+        "img_shapes": img_shapes,
+        "media_kind": "video",
+        "audio_sample_rate": 32_000,
+        "min_global_steps": 3,
+        "max_global_steps": 3,
+    }
     assert "unrelated_metadata" not in field["extra_fields"]
     assert field["condition_image_latents"].shape == (4096, 64)
+    assert field["audio"].shape == (1, 16)
+    assert captured["tags"][0]["response_shape"] == (3, 2, 2)
 
 
 def test_tq_batch_restores_non_tensor_trajectory_metadata(monkeypatch):
@@ -249,7 +260,10 @@ def test_tq_batch_restores_non_tensor_trajectory_metadata(monkeypatch):
         "kv_batch_get",
         lambda **kwargs: {
             "all_latents": torch.zeros(2, 4, 1024, 64),
-            "extra_fields": [{"img_shapes": value} for value in img_shapes],
+            "extra_fields": [
+                {"img_shapes": img_shapes[0], "media_kind": "video", "audio_sample_rate": 32_000},
+                {"img_shapes": img_shapes[1]},
+            ],
         },
     )
 
@@ -258,6 +272,8 @@ def test_tq_batch_restores_non_tensor_trajectory_metadata(monkeypatch):
     )
 
     assert data.non_tensor_batch["img_shapes"].tolist() == img_shapes
+    assert data.non_tensor_batch["media_kind"].tolist() == ["video", None]
+    assert data.non_tensor_batch["audio_sample_rate"].tolist() == [32_000, None]
     assert tu.get(data.to_tensordict(), "img_shapes") == img_shapes
 
 
@@ -287,10 +303,65 @@ async def test_run_prompt_publishes_failure_after_siblings_settle(monkeypatch):
         prompt={"uid": "sample", "agent_name": "diffusion_single_turn_agent"},
         sampling_params={},
         trajectory={"validate": False},
-        sample_index=0,
+        prompt_index=0,
     )
 
     assert lifecycle == ["running", "sibling_settled", "failure"]
+
+
+@pytest.mark.asyncio
+async def test_generate_sequences_seeds_from_global_prompt_index(monkeypatch):
+    """Per-request rollout seeds must derive from the global batch index (#561).
+
+    Each agent worker only sees a chunk of the batch, so seeding from the
+    chunk-local position makes every worker reuse the same seed offsets and
+    roll out duplicated noise. Two chunks carrying global indices [0, 1] and
+    [2, 3] must yield distinct seeds for all prompt x session combinations.
+    """
+    worker_cls = DiffusionAgentLoopWorkerTQ.__ray_metadata__.modified_class
+    worker = object.__new__(worker_cls)
+    worker.background_tasks = set()
+    worker.rollout_config = SimpleNamespace(
+        n=2,
+        pipeline={},
+        algo={},
+        calculate_log_probs=False,
+        agent=SimpleNamespace(default_agent_loop="diffusion_single_turn_agent"),
+        val_kwargs=SimpleNamespace(n=2, seed=0, pipeline={}, algo={}),
+    )
+
+    async def fake_kv_put(*, key, partition_id, tag):
+        del key, partition_id, tag
+
+    captured_seeds: list[int] = []
+
+    async def fake_run_agent_loop(self, sampling_params, *, session_id, **kwargs):
+        del self, session_id, kwargs
+        captured_seeds.append(sampling_params["seed"])
+
+    monkeypatch.setattr(diffusion_agent_loop_tq, "_config_to_sampling_dict", lambda cfg: {})
+    monkeypatch.setattr(diffusion_agent_loop_tq.tq, "async_kv_put", fake_kv_put)
+    worker._run_agent_loop = MethodType(fake_run_agent_loop, worker)
+
+    def make_chunk(global_indices: list[int], uids: list[str]) -> TensorDict:
+        return TensorDict(
+            {
+                "index": torch.tensor(global_indices),
+                "uid": NonTensorStack(*uids),
+                "rollout_seed": NonTensorData(42),
+                "global_steps": NonTensorData(1),
+            },
+            batch_size=[len(global_indices)],
+        )
+
+    # Two chunks as AgentLoopManagerTQ would split a 4-prompt batch across two
+    # workers: chunk-local positions restart at 0, global indices do not.
+    await worker.generate_sequences(make_chunk([0, 1], ["a", "b"]))
+    await worker.generate_sequences(make_chunk([2, 3], ["c", "d"]))
+    await asyncio.gather(*worker.background_tasks)
+
+    assert len(captured_seeds) == 4 * 2  # 4 prompts x rollout.n=2
+    assert len(set(captured_seeds)) == 4 * 2  # no duplicated noise across workers
 
 
 @pytest.mark.asyncio

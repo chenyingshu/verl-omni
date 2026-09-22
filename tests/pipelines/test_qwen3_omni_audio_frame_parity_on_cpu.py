@@ -59,8 +59,10 @@ def processor_with_dedup(monkeypatch):
     """Run the real adapter's configure_processor on stubs; returns a processor with dedup_pad_tokens bound."""
     pytest.importorskip("transformers")
     _require_version("transformers", "5.0.0")
-    from transformers import AutoConfig, AutoProcessor
+    from transformers import AutoConfig
     from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
+
+    from verl_omni.pipelines.qwen3_omni.video_processor import Qwen3OmniVideoProcessor
 
     tokenizer = SimpleNamespace(
         unk_token_id=0,
@@ -76,7 +78,7 @@ def processor_with_dedup(monkeypatch):
         thinker_config=SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2)),
         talker_config=SimpleNamespace(vision_start_token_id=104),
     )
-    monkeypatch.setattr(AutoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    monkeypatch.setattr(Qwen3OmniVideoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
     monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
     # configure_processor binds get_rope_index/get_llm_pos_ids_for_vision via
     # MethodType on real model class methods; ensure they exist.

@@ -14,6 +14,7 @@ on:
       - "tests/special_e2e/**"
       - "pyproject.toml"
       - .github/workflows/gpu_smoke.yml
+      - .github/qwen_tts_pin.txt
       - .github/vllm_omni_pin.txt
       - .github/verl_pin.txt
       - .github/actions/gpu-smoke-prepare/**
@@ -32,6 +33,7 @@ on:
       - "tests/special_e2e/**"
       - "pyproject.toml"
       - .github/workflows/gpu_smoke.yml
+      - .github/qwen_tts_pin.txt
       - .github/vllm_omni_pin.txt
       - .github/verl_pin.txt
       - .github/actions/gpu-smoke-prepare/**
@@ -130,7 +132,7 @@ jobs:
     needs: setup_runner
     if: needs.setup_runner.outputs.mode != 'none'
     runs-on: ["${{ needs.setup_runner.outputs.runner-label || needs.setup_runner.outputs.runner-size || 'L20x8' }}"]
-    timeout-minutes: ${{ needs.setup_runner.outputs.group-count == '1' && 45 || 90 }}
+    timeout-minutes: ${{ needs.setup_runner.outputs.group-count == '1' && 60 || 90 }}
     env:
       # Match verl gpu_unit_tests.yml: uppercase-only proxy keys. GitHub Actions
       # treats env names as case-insensitive, so http_proxy duplicates HTTP_PROXY.

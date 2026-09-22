@@ -32,6 +32,9 @@ defaults:
   # Distillation config for diffusion on-policy distillation.
   - diffusion/distillation@distillation: diffusion_distillation
 
+  # DMD2 distribution matching, separate from OPD.
+  - diffusion/dmd@dmd: diffusion_dmd
+
   # load the reference default config, then apply the fields in the current yaml
   # self config override anything above
   - _self_
@@ -253,6 +256,33 @@ trainer:
       # Pause standalone rollout during actor update, resume after weight sync.
       sync_compatible: false
 
+      # Lend idle hybrid trainer GPUs to rollout. Requires sync_compatible=false.
+      hybrid_rollout:
+
+        # Target dataclass for this configuration
+        _target_: verl.trainer.config.HybridRolloutSwitchConfig
+
+        # Global toggle to allow the trainer to switch to rollout mode to reduce idle.
+        enable_switch: false
+
+        # Fraction of train_batch_size that must be sampleable before the rollout replicas are reclaimed.
+        switch_threshold_ratio: 0.4
+
+        # Automatically adapt the threshold to reduce trainer starvation when enable_switch is True.
+        adaptive_switch_threshold: true
+
+        # Fraction added to switch_threshold_ratio after sustained trainer idle.
+        switch_threshold_step_up: 0.05
+
+        # Fraction subtracted from switch_threshold_ratio after a sustained calm period.
+        switch_threshold_step_down: 0.03
+
+        # Consecutive idle/calm steps required before ratio adjusts in that direction.
+        switch_threshold_release_steps: 2
+
+        # Window size for calculating average switch cost.
+        switch_cost_window_size: 3
+
     # Replay buffer sampling strategy.
     sampler:
 
@@ -282,13 +312,13 @@ trainer:
       sampler_kwargs: {}
 
 # Profiler configs (mirrors verl/trainer/config/ppo_trainer.yaml `global_profiler`).
-# verl-omni does not support NPU; only nsys, torch and torch_memory tools are supported.
+# Supported tools are nsys, npu, torch, and torch_memory.
 global_profiler:
 
   # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.utils.profiler.ProfilerConfig
 
-  # Profiling tool: choose between nsys, torch, torch_memory
+  # Profiling tool: choose between nsys, npu, torch, torch_memory
   tool: null
 
   # Steps at which profiling should be performed (e.g. [1, 2, 5]). null disables profiling.

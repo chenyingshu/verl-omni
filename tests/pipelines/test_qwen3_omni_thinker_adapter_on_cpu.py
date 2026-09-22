@@ -46,7 +46,9 @@ def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
     pytest.importorskip("transformers")
     _require_version("transformers", "5.0.0")
 
-    from transformers import AutoConfig, AutoProcessor
+    from transformers import AutoConfig
+
+    from verl_omni.pipelines.qwen3_omni.video_processor import Qwen3OmniVideoProcessor
 
     token_ids = {
         "<|image_pad|>": 101,
@@ -68,7 +70,7 @@ def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
         talker_config=SimpleNamespace(vision_start_token_id=104),
     )
 
-    monkeypatch.setattr(AutoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    monkeypatch.setattr(Qwen3OmniVideoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
     monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
 
     configured = Qwen3OmniThinkerAdapter.configure_processor(
@@ -91,13 +93,16 @@ def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
     ]
 
 
-def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
-    """The V1 adapter must install the audio-aware agent-loop RoPE path."""
+@pytest.mark.parametrize("has_audio,has_video", [(True, False), (False, True), (True, True), (False, False)])
+def test_v1_adapter_forwards_qwen3_omni_media_metadata_to_rope(monkeypatch, has_audio, has_video):
+    """Forward audio lengths and video timing without adding absent modalities."""
     pytest.importorskip("transformers")
     _require_version("transformers", "5.0.0")
 
-    from transformers import AutoConfig, AutoProcessor
+    from transformers import AutoConfig
     from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
+
+    from verl_omni.pipelines.qwen3_omni.video_processor import Qwen3OmniVideoProcessor
 
     class Qwen3OmniMoeProcessor:
         def __init__(self):
@@ -129,10 +134,11 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
         image_grid_thw=None,
         video_grid_thw=None,
         audio_seqlens=None,
+        second_per_grids=None,
     ):
         del attention_mask, image_grid_thw, video_grid_thw
         processor.audio_seqlens = audio_seqlens
-        _ = audio_seqlens[0]
+        processor.second_per_grids = second_per_grids
         return torch.zeros((3, *input_ids.shape), dtype=torch.float32), torch.zeros((input_ids.shape[0], 1))
 
     processor = Qwen3OmniMoeProcessor()
@@ -140,7 +146,7 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
         thinker_config=SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2)),
         talker_config=SimpleNamespace(vision_start_token_id=104),
     )
-    monkeypatch.setattr(AutoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    monkeypatch.setattr(Qwen3OmniVideoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
     monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
     monkeypatch.setattr(Qwen3OmniMoeThinkerForConditionalGeneration, "get_rope_index", _get_rope_index)
 
@@ -150,10 +156,14 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
     )
     assert hasattr(configured, "get_rope_index_kwargs")
 
-    multi_modal_inputs = {"feature_attention_mask": torch.tensor([[1, 1, 1, 0]])}
+    multi_modal_inputs = {}
+    if has_audio:
+        multi_modal_inputs["feature_attention_mask"] = torch.tensor([[1, 1, 1, 0]])
+    if has_video:
+        multi_modal_inputs["video_second_per_grid"] = torch.tensor([3.75])
     extra_kwargs = configured.get_rope_index_kwargs(multi_modal_inputs)
-    assert "audio_seqlens" in extra_kwargs
-    torch.testing.assert_close(extra_kwargs["audio_seqlens"], torch.tensor([3]))
+    assert ("audio_seqlens" in extra_kwargs) == has_audio
+    assert ("second_per_grids" in extra_kwargs) == has_video
 
     worker = AgentLoopWorker()
     worker.processor = configured
@@ -161,7 +171,14 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
     attention_mask = torch.ones_like(input_ids)
 
     worker._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
-    torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+    if has_audio:
+        torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+    else:
+        assert configured.audio_seqlens is None
+    if has_video:
+        torch.testing.assert_close(configured.second_per_grids, torch.tensor([3.75]))
+    else:
+        assert configured.second_per_grids is None
 
 
 class _FusedMoEExperts(nn.Module):
@@ -400,3 +417,12 @@ def test_peft_wrapped_model_forwards():
     assert not torch.allclose(out.detach(), bare_out, atol=1e-6), (
         "LoRA-wrapped output should differ from bare model output"
     )
+
+
+def test_omni_model_base_fsdp_ignore_hook_defaults_to_empty_list():
+    """The hook is declared on the base: adapters opt in, others declare nothing."""
+    from verl_omni.pipelines.model_base import OmniModelBase
+
+    assert OmniModelBase.get_fsdp_ignored_module_names(SimpleNamespace()) == []
+    # The Qwen3-Omni thinker shards every subtree: it must not opt in.
+    assert Qwen3OmniThinkerAdapter.get_fsdp_ignored_module_names(SimpleNamespace()) == []

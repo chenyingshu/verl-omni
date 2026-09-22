@@ -22,7 +22,7 @@ dependencies = [
     "accelerate>=1.14.0",
     "cachetools",
     "codetiming",
-    "datasets",
+    "datasets>=2.20.0",  # 2.19- uses pa.PyExtensionType; pyarrow>=21 removed it
     "diffusers>=0.40.0",
     "dill",
     "hydra-core",
@@ -46,7 +46,7 @@ dependencies = [
     "latex2sympy2_extended",
     "math_verify",
     "tensorboard",
-    "TransferQueue==0.1.8",
+    "TransferQueue==0.1.9",
 ]
 
 [project.optional-dependencies]
@@ -58,6 +58,16 @@ vllm-omni = [
 audio = [
     "qwen-omni-utils>=0.0.9",
     "audioread",
+]
+# Install qwen-tts separately from the pinned upstream Transformers 5 support
+# revision. The released 0.1.1 source and metadata target Transformers 4.57.3.
+omni = [
+    "einops>=0.8.0",
+    "librosa>=0.10.2",
+    "onnxruntime>=1.20.0",
+    "soundfile>=0.12.1",
+    "sox>=1.5.0",
+    "torchaudio==2.11.0",
 ]
 # CUDA rollout backend (vllm) + actor FA3 (kernels) + liger-kernel. Install in step 1 on GPU.
 gpu = [

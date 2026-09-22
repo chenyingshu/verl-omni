@@ -98,7 +98,7 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
                     prompt,
                     sampling_params,
                     trajectory=trajectory_info[i],
-                    sample_index=i,
+                    prompt_index=int(index[i]),
                     rollout_base_seed=rollout_base_seed,
                 )
             )
@@ -125,7 +125,7 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
         prompt: dict,
         sampling_params: dict,
         trajectory: dict,
-        sample_index: int,
+        prompt_index: int,
         rollout_base_seed: int | None = None,
     ) -> None:
         """Spawn ``rollout.n`` sessions per prompt and write trajectories to TQ."""
@@ -139,7 +139,11 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
             for session_id in range(n):
                 run_sampling_params = dict(sampling_params)
                 if rollout_base_seed is not None and not trajectory["validate"]:
-                    run_sampling_params["seed"] = _derive_rollout_seed(rollout_base_seed, sample_index * n + session_id)
+                    # Seed from the global prompt index: each worker only sees a
+                    # chunk of the batch, so a chunk-local position would reuse
+                    # the same seed offsets in every worker and roll out
+                    # duplicated noise.
+                    run_sampling_params["seed"] = _derive_rollout_seed(rollout_base_seed, prompt_index * n + session_id)
                 task = asyncio.create_task(
                     self._run_agent_loop(
                         run_sampling_params,
@@ -238,6 +242,13 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
             extra_fields_out["img_shapes"] = extra["img_shapes"]
         if reward_extra_info is not None:
             extra_fields_out["reward_extra_info"] = reward_extra_info
+        # Tensor media (for example generated audio) is already carried as a
+        # top-level TQ field above. Preserve its non-tensor declaration/metadata
+        # in the envelope that ``diffusion_tq_batch_to_dataproto`` restores.
+        for media_key in ("media_kind", "audio_sample_rate"):
+            media_value = extra.get(media_key)
+            if media_value is not None and not isinstance(media_value, torch.Tensor):
+                extra_fields_out[media_key] = media_value
         # Track the rollout model version this trajectory was generated against.
         step = trajectory["step"] if trajectory else global_steps
         extra_fields_out["min_global_steps"] = step
@@ -252,6 +263,7 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
                 "status": "success",
                 "prompt_len": prompt_len,
                 "response_len": 1,
+                "response_shape": tuple(int(dim) for dim in field["responses"].shape),
                 "seq_len": prompt_len + 1,
                 "global_steps": step,
                 "min_global_steps": step,

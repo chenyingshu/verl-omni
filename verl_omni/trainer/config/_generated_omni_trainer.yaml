@@ -802,6 +802,15 @@ reward:
         ranks: []
         save_path: ${oc.select:global_profiler.save_path,outputs/profile}/reward_model
         tool_config:
+          npu:
+            _target_: verl.utils.profiler.config.NPUToolConfig
+            contents: []
+            level: level0
+            analysis: true
+            discrete: false
+            profile_token_start: null
+            profile_token_end: null
+            name: npu
           nsys:
             _target_: verl.utils.profiler.config.NsightToolConfig
             discrete: ${oc.select:global_profiler.global_tool_config.nsys.discrete,false}
@@ -871,7 +880,10 @@ reward:
     path: null
     name: compute_score
     use_accelerator: false
+  accelerator_workers:
+    enabled: false
   reward_functions: {}
+  models: {}
   aggregation: weighted_sum
   reward_manager:
     _target_: verl.workers.config.reward_model.RewardManagerConfig
@@ -940,7 +952,7 @@ distillation:
   nnodes: 0
   teacher_models:
     teacher_model:
-      _target_: verl.workers.config.DistillationTeacherModelConfig
+      _target_: verl_omni.workers.config.omni.distillation.OmniDistillationTeacherModelConfig
       key: null
       model_path: null
       num_replicas: 0

@@ -1,6 +1,6 @@
 # Supported Models
 
-Last updated: 08/27/2026.
+Last updated: 09/09/2026.
 
 VeRL-Omni supports RL post-training for generative models across image, video,
 audio, and omni modalities. This page catalogues every model with a ready-to-run
@@ -118,7 +118,12 @@ alignment and does not directly enforce source-image preservation.
 
 | Trainer | Example script | GPU config |
 |---------|---------------|------------|
-| DanceGRPO (HPSv3) | `examples/dancegrpo_trainer/wan22/run_wan22_5b_t2v_hpsv3_auto.sh` | 8×GPU or 16×NPU (auto-detect) |
+| DanceGRPO (HPSv3, V1 sync) | `examples/dancegrpo_trainer/wan22/run_wan22_5b_t2v_hpsv3_v1.sh` | 8×GPU |
+| DanceGRPO (HPSv3, v0, NPU) | `examples/dancegrpo_trainer/wan22/run_wan22_5b_t2v_hpsv3_auto.sh` | 16×NPU (Ascend 800T A2) |
+
+The CUDA default is the V1 sync recipe (`main_diffusion_v1`, TransferQueue).
+The v0 auto-detect launcher is **deprecated** for CUDA and remains for NPU
+until a V1 NPU recipe lands.
 
 **Reward model:** HPSv3 (Human Preference Score v3) — local safetensors checkpoint
 placed at `$WORKSPACE/CKPT/HPSv3/HPSv3.safetensors`.
@@ -133,7 +138,7 @@ The HPSv3 reward is the only validated configuration. Other reward functions
 |----------|--------|
 | **Hugging Face ID** | `dg845/LTX-2.3-Diffusers` |
 | **Architecture** | LTX-2 DiT; checkpoint `_class_name` is `LTX2Pipeline` (rollout uses vLLM-Omni `LTX23Pipeline`) |
-| **Modality** | Text → Video + Audio |
+| **Modality** | Text → Video + Audio; Text + first-frame image → Video + Audio |
 | **Pipeline** | Flow-matching with joint audio-video CPS transitions |
 | **Default recipe** | `sde_window_size=3`, `sde_window_range=[0,10]`, `sde_contiguous=False` |
 
@@ -144,8 +149,9 @@ For dataset layout and launch overrides, see
 
 | Trainer | Example script | GPU config |
 |---------|---------------|------------|
-| Flow-GRPO (LoRA) | `examples/flowgrpo_trainer/ltx2/run_ltx2_3_t2av_lora.sh` | 8×GPU (TP=2) |
-| Flow-GRPO (LoRA, NPU) | `examples/flowgrpo_trainer/ltx2/run_ltx2_3_t2av_lora_npu.sh` | 16×NPU (TP=4) |
+| Flow-GRPO (T2AV LoRA) | `examples/flowgrpo_trainer/ltx2/run_ltx2_3_t2av_lora.sh` | 8×GPU (TP=2) |
+| Flow-GRPO (TI2VA LoRA) | `examples/flowgrpo_trainer/ltx2/run_ltx2_3_ti2va_lora.sh` | 8×GPU (TP=1) |
+| Flow-GRPO (T2AV LoRA, NPU) | `examples/flowgrpo_trainer/ltx2/run_ltx2_3_t2av_lora_npu.sh` | 16×NPU (TP=4) |
 
 **Reward models:** CLAP (`laion/larger_clap_general`) and ImageBind (local
 `.pth`, CC-BY-NC-SA 4.0) for audio-video alignment.
@@ -222,8 +228,8 @@ For version requirements and detailed setup instructions, see
 | GSPO (text) | `examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_v1.sh` | 4×H100/H200 80GB |
 | GSPO (image) | `examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_v1.sh` | 4×H100/H200 80GB |
 | GSPO (AVQA, NPU) | `examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh` | 16×NPU (Atlas 800T A3) |
-| GSPO (full, NPU) | `examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu.sh` | 16×NPU (Atlas 800T A3) |
 | Offline DPO (LoRA) | `examples/dpo_trainer/qwen3_omni/qwen3_omni/run_qwen3_omni_omni_preference_lora.sh` | 4×H800 |
+| [GSPO OPD (image, NPU)](../algo/omni_opd.md) | `examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_v1_opd_npu.sh` | 32×NPU (2 x Atlas 800T A3) |
 
 The GSPO actor (FSDP2, 30B + LoRA r=32 with offloading) and vLLM-Omni rollout (TP=2)
 colocate on the same 4 GPUs. The rollout deploy config is auto-generated from
@@ -231,6 +237,30 @@ colocate on the same 4 GPUs. The rollout deploy config is auto-generated from
 verl CLI overrides (e.g. `actor_rollout_ref.rollout.gpu_memory_utilization=0.4`)
 rather than a separate per-stage YAML file. Offline DPO reads Omni-Preference
 parquet pairs and does not start rollout or reward workers.
+
+---
+
+### Qwen3-TTS-12Hz-0.6B Base
+
+| Property | Detail |
+|----------|--------|
+| **Hugging Face ID** | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` |
+| **Trainable component** | Talker codec-0 policy; full-parameter and Hindi SFT-LoRA examples |
+| **Rollout** | Two-stage vLLM-Omni Talker + code2wav pipeline |
+| **Algorithm** | Stock GRPO, vanilla PPO loss, optional direct KL |
+| **Reward** | Generic decoded-audio reward; SpeechJudge-BTRM and Whisper CER external scorers |
+
+Both examples use two training GPUs and an independently deployed audio scorer.
+The Hindi recipe starts from the public Hindi SFT adapter merged into the Base,
+then trains a fresh rank-8 GRPO LoRA on IndicVoices-R prompts.
+See [Qwen3-TTS GRPO with an audio reward](../../examples/grpo_trainer/qwen3_tts/README.md).
+
+**Supported trainers:**
+
+| Trainer | Example script | GPU config |
+|---------|---------------|------------|
+| GRPO (full parameters) | `examples/grpo_trainer/qwen3_tts/run_qwen3_tts_grpo.sh` | 2×GPU |
+| GRPO (Hindi SFT-LoRA) | `examples/grpo_trainer/qwen3_tts/run_qwen3_tts_hindi_grpo.sh` | 2×GPU |
 
 ---
 
@@ -247,6 +277,7 @@ parquet pairs and does not start rollout or reward workers.
 | MiniMax-H3 | MiniMax H3 transformer | H3 text encoder |
 | BAGEL | Unified MM | — |
 | Qwen3-Omni-30B | Omni MoE | Qwen3 |
+| Qwen3-TTS-12Hz-0.6B | Talker + code2wav | Qwen3 |
 
 ---
 
@@ -261,7 +292,9 @@ parquet pairs and does not start rollout or reward workers.
 | CLAP | `laion/larger_clap_general` | Audio | LTX-2.3 (Flow-GRPO), MiniMax-H3 (DiffusionNFT) | Local transformers load |
 | ImageBind | Local `.pth` | Audio + Video | LTX-2.3 (Flow-GRPO), MiniMax-H3 (DiffusionNFT) | Local ImageBind package (CC-BY-NC-SA 4.0) |
 | DiNa-LRM | HTTP latent scorer | Diffusion latents | SD3.5 (Flow-GRPO DRM) | Separate `diffusion-rm` process, safetensors HTTP |
-| HTTP scorer | External HTTP service | Any | Any model | Gunicorn/Flask, pickle protocol |
+| HTTP scorer | External HTTP service | Image/audio | Any model | Pickle image or JSON audio protocol |
+| SpeechJudge-BTRM | `RMSnow/SpeechJudge-BTRM` | Audio quality | Qwen3-TTS example | External service; CC-BY-NC-4.0 |
+| Whisper large-v3-turbo | `openai/whisper-large-v3-turbo` | Audio (ASR CER) | Qwen3-TTS Hindi GRPO | External JSON audio scorer |
 | JPEG incompressibility | Rule-based | Image stats | Any diffusion model | No model process needed |
 
 For end-to-end instructions on setting up each reward, see the respective
@@ -271,18 +304,20 @@ trainer's README in `examples/`.
 
 ## Which Trainer for Which Model?
 
-| Algorithm | Qwen-Image | Qwen-Image-Edit | SD3.5 | Wan2.2 | LTX-2.3 | MiniMax-H3 | BAGEL | Qwen3-Omni |
-|-----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Flow-GRPO | ✅ | ✅ | ✅ | — | ✅ | WIP | ✅ | — |
-| Flow-DPPO | ✅ | — | — | — | — | — | — | — |
-| GRPO-Guard | ✅ | — | — | — | — | — | — | — |
-| Mix-GRPO | ✅ | — | — | — | — | — | — | — |
-| DanceGRPO | — | — | — | ✅ | — | — | — | — |
-| DPO | ✅ | — | ✅ | — | — | — | — | ✅ |
-| DiffusionNFT | ✅ | — | — | — | — | ✅ | — | — |
-| [DiffusionOPD](../algo/diffusion_opd.md) (incl. MOPD) | — | — | ✅ | — | — | — | — | — |
-| GSPO | — | — | — | — | — | — | — | ✅ |
+| Algorithm | Qwen-Image | Qwen-Image-Edit | SD3.5 | Wan2.2 | LTX-2.3 | MiniMax-H3 | BAGEL | Qwen3-Omni | Qwen3-TTS |
+|-----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| GRPO | — | — | — | — | — | — | — | — | ✅ |
+| Flow-GRPO | ✅ | ✅ | ✅ | — | ✅ | WIP | ✅ | — | — |
+| Flow-DPPO | ✅ | — | — | — | — | — | — | — | — |
+| GRPO-Guard | ✅ | — | — | — | — | — | — | — | — |
+| Mix-GRPO | ✅ | — | — | — | — | — | — | — | — |
+| DanceGRPO | — | — | — | ✅ | — | — | — | — | — |
+| DPO | ✅ | — | ✅ | — | — | — | — | ✅ | WIP |
+| DiffusionNFT | ✅ | — | — | — | — | ✅ | — | — | — |
+| [DiffusionOPD](../algo/diffusion_opd.md) (incl. MOPD) | — | — | ✅ | — | — | — | — | — | — |
+| GSPO (incl. OPD) | — | — | — | — | — | — | — | ✅ | WIP |
 
-HunyuanImage-3.0 (MixGRPO / SRPO) and Qwen3-TTS (DPO / GSPO) appear on the
-project README as Planned or WIP and do not yet have a ready-to-run recipe, so
-they are omitted from the catalogue above.
+HunyuanImage-3.0 (MixGRPO / SRPO) appears on the project README as Planned or
+WIP and does not yet have a ready-to-run recipe, so it is omitted from the
+catalogue above. Qwen3-TTS DPO and GSPO remain WIP; its ready-to-run GRPO recipe
+is listed above.

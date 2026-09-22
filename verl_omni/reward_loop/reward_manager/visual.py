@@ -21,6 +21,8 @@ from verl.utils.reward_score import default_compute_score as _upstream_default_c
 
 from verl_omni.utils.reward_score import default_compute_score_image
 
+from .media import _reward_extra_info
+
 
 def _validate_visual_response(response_visual, config, *, is_validate: bool) -> None:
     rollout_config = config.actor_rollout_ref.rollout
@@ -63,21 +65,25 @@ class VisualRewardManager(RewardManagerBase):
         _validate_visual_response(response_visual, self.config, is_validate=data_item.meta_info.get("validate", False))
         data_source = data_item.non_tensor_batch["data_source"]
         ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
-        extra_info = data_item.non_tensor_batch.get("extra_info", {})
-        tool_extra_fields = data_item.non_tensor_batch.get("tool_extra_fields", None)
-        if tool_extra_fields is not None:
-            extra_info.update(tool_extra_fields.items())
+        extra_info = _reward_extra_info(data_item)
 
         num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
         rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
         extra_info["num_turns"] = num_turns
         extra_info["rollout_reward_scores"] = rollout_reward_scores
 
+        rm_rollout = self.config.reward.reward_model.rollout
+        # Only forward max_tokens and the determinism seed; keep the scorer's own sampling defaults.
+        sampling_params = {"max_tokens": getattr(rm_rollout, "response_length", None) or 4096}
+        if rm_rollout.get("full_determinism", False):
+            sampling_params["seed"] = rm_rollout.get("seed", 42)
+
         extra_reward_kwargs = (
             {
                 "reward_router_address": self.reward_router_address,
                 "reward_model_tokenizer": self.reward_model_tokenizer,
                 "model_name": self.config.reward.reward_model.model_path,
+                "sampling_params": sampling_params,
             }
             if self.reward_router_address is not None
             else {}

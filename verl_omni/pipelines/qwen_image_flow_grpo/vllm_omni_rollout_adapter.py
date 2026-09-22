@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import copy
 import os
 from typing import Any, Literal
@@ -224,9 +226,9 @@ class QwenImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, QwenImagePipelin
 
     def prepare_encode(
         self,
-        state: "StepRequestState",
+        state: StepRequestState,
         **kwargs: Any,
-    ) -> "StepRequestState":
+    ) -> StepRequestState:
         """Populate *state* with encoded prompts, latents, timesteps, and CFG config.
 
         Override of ``QwenImagePipeline.prepare_encode`` that accepts pre-tokenized

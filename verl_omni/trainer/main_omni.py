@@ -43,6 +43,8 @@ from verl_omni.trainer.diffusion.ray_diffusion_trainer import (
 )
 from verl_omni.utils.config import validate_config as validate_omni_config
 from verl_omni.utils.fs import resolve_model_local_dir
+from verl_omni.utils.rl_insight import enable_rl_insight
+from verl_omni.workers.config.reward import reward_pool_is_separate, reward_role_required
 
 __all__ = [
     "RayTrainerTaskRunner",
@@ -113,15 +115,17 @@ class RayTrainerTaskRunner:
             global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
         }
 
-        if config.reward.reward_model.enable_resource_pool:
-            if config.reward.reward_model.n_gpus_per_node <= 0:
+        if reward_role_required(config) and reward_pool_is_separate(config):
+            reward_gpus = config.reward.reward_model.n_gpus_per_node
+            reward_nnodes = config.reward.reward_model.nnodes
+            if reward_gpus <= 0:
                 raise ValueError("config.reward.reward_model.n_gpus_per_node must be greater than 0")
-            if config.reward.reward_model.nnodes <= 0:
+            if reward_nnodes <= 0:
                 raise ValueError("config.reward.reward_model.nnodes must be greater than 0")
 
-            reward_pool = [config.reward.reward_model.n_gpus_per_node] * config.reward.reward_model.nnodes
+            reward_pool = [reward_gpus] * reward_nnodes
             resource_pool_spec["reward_pool"] = reward_pool
-        else:
+        elif reward_role_required(config):
             config.reward.reward_model.nnodes = config.trainer.nnodes
             config.reward.reward_model.n_gpus_per_node = config.trainer.n_gpus_per_node
 
@@ -134,8 +138,8 @@ class RayTrainerTaskRunner:
         from verl.trainer.ppo.ray_trainer import Role
 
         if config.algorithm.sample_source == "online":
-            if config.reward.reward_model.enable:
-                if config.reward.reward_model.enable_resource_pool:
+            if reward_role_required(config):
+                if reward_pool_is_separate(config):
                     self.mapping[Role.RewardModel] = "reward_pool"
                 else:
                     self.mapping[Role.RewardModel] = "global_pool"
@@ -330,6 +334,8 @@ def uses_v1_trainer(config) -> bool:
 
 def run_omni(config, task_runner_class=None) -> None:
     """Initialize Ray and run distributed Omni training."""
+    enable_rl_insight(config)
+
     if uses_v1_trainer(config):
         from verl.trainer.main_ppo import TaskRunnerV1, run_ppo
 

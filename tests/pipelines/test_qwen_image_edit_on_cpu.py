@@ -29,6 +29,7 @@ from verl_omni.pipelines.model_base import DiffusionModelBase
 from verl_omni.pipelines.qwen_image_edit_flow_grpo.diffusers_training_adapter import QwenImageEditPlusFlowGRPO
 from verl_omni.pipelines.qwen_image_edit_flow_grpo.vllm_omni_rollout_adapter import (
     QwenImageEditPlusPipelineWithLogProb,
+    _condition_images_for_prompt_encoding,
     _use_true_cfg,
     _validate_condition_image_sizes,
 )
@@ -193,6 +194,28 @@ def test_prompt_encoding_requires_condition_images():
             torch.tensor([1]),
             condition_images=None,
         )
+
+
+def test_prompt_encoding_prefers_raw_image_over_preprocessed_alias():
+    raw_image = torch.zeros(3, 8, 8)
+    resized_image = torch.ones(3, 4, 4)
+    payload = {
+        "multi_modal_data": {"image": [raw_image]},
+        "additional_information": {"condition_images": [resized_image]},
+    }
+
+    result = _condition_images_for_prompt_encoding(payload)
+    assert len(result) == 1
+    assert result[0] is raw_image
+
+
+def test_prompt_encoding_falls_back_to_preprocessed_image():
+    resized_image = torch.ones(3, 4, 4)
+    payload = {"additional_information": {"condition_images": [resized_image]}}
+
+    result = _condition_images_for_prompt_encoding(payload)
+    assert len(result) == 1
+    assert result[0] is resized_image
 
 
 def test_condition_images_require_fixed_square_latents():

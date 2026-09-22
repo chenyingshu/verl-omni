@@ -82,10 +82,14 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
         """
         import types
 
-        from transformers import AutoConfig, AutoProcessor
+        from transformers import AutoConfig
         from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
 
-        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=model_config.trust_remote_code)
+        from verl_omni.pipelines.qwen3_omni.video_processor import Qwen3OmniVideoProcessor
+
+        processor = Qwen3OmniVideoProcessor.from_pretrained(
+            model_path, trust_remote_code=model_config.trust_remote_code
+        )
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=model_config.trust_remote_code)
 
         processor.config = config.thinker_config
@@ -104,10 +108,14 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
 
         # Provide audio lengths to verl's generic V1 agent loop via get_rope_index_kwargs.
         def _get_rope_index_kwargs(multi_modal_inputs: dict) -> dict:
+            result = {}
+            seconds = multi_modal_inputs.get("video_second_per_grid")
+            if seconds is not None:
+                result["second_per_grids"] = seconds
             feature_attention_mask = multi_modal_inputs.get("feature_attention_mask")
             if feature_attention_mask is not None:
-                return {"audio_seqlens": feature_attention_mask.sum(-1)}
-            return {}
+                result["audio_seqlens"] = feature_attention_mask.sum(-1)
+            return result
 
         processor.get_rope_index_kwargs = _get_rope_index_kwargs
 
