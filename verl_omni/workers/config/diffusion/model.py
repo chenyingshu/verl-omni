@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DiffusionModelARConfig(BaseConfig):
+    # LoRA configs reuse diffusion model's
 
     override_config: dict[str, Any] = field(default_factory=dict)
 

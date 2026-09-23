@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 
 import verl_omni.workers.engine_workers as engine_workers_module
 from verl_omni.workers.engine.fsdp.diffusers_impl import CompositeFSDPEngine
-from verl_omni.workers.engine_workers import ActorRolloutRefWorker, _actor_has_lora_adapter
+from verl_omni.workers.engine_workers import ActorRolloutRefWorker
 
 
 def _make_diffusion_model_config(*, lora_rank: int = 0) -> object:

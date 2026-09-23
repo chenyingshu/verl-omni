@@ -121,19 +121,12 @@ class TestDiffusionARConfig:
 class TestDiffusionModelARConfig:
     def test_defaults(self):
         cfg = DiffusionModelARConfig()
-        assert cfg.use_shm is False
-        assert cfg.enable_gradient_checkpointing is True
-        assert cfg.lora_rank == 0
-        assert cfg.lora_alpha == 16
-        assert cfg.target_modules == "all-linear"
         assert cfg.override_config == {}
 
     def test_override_config(self):
         cfg = DiffusionModelARConfig(
-            lora_rank=8,
             override_config={"attn_implementation": "flash_attention_2"},
         )
-        assert cfg.lora_rank == 8
         assert cfg.override_config["attn_implementation"] == "flash_attention_2"
 
 
@@ -363,14 +356,13 @@ class TestDiffusionModelConfigPolicyAdapters:
                     "+load_tokenizer=false",
                     "attn_backend=native",
                     "algorithm=dual_grpo",
-                    "ar.lora_rank=8",
+                    "lora_rank=8",
                     "+ar.override_config.attn_implementation=flash_attention_2",
                 ],
             )
         with patch("verl_omni.workers.config.diffusion.model.resolve_model_local_dir", return_value=str(model_dir)):
             model_cfg: DiffusionModelConfig = omega_conf_to_dataclass(cfg)
         assert isinstance(model_cfg.ar, DiffusionModelARConfig)
-        assert model_cfg.ar.lora_rank == 8
         assert model_cfg.ar.override_config["attn_implementation"] == "flash_attention_2"
 
     def test_h3_rejects_all_linear_lora_before_rollout_sync(self, tmp_path):

@@ -58,7 +58,6 @@ class DiffusionLossConfig(BaseConfig):
             "dpo",
             "dmd2",
             "dance_grpo",
-            "dual_grpo",
             "distill_kl",
             "distill_fm_mse",
         ]

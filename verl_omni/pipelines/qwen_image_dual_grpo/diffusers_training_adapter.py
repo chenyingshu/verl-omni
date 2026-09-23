@@ -26,3 +26,9 @@ __all__ = ["QwenImageDualGRPO"]
 @DiffusionModelBase.register("QwenImagePipeline", algorithm="dual_grpo")
 class QwenImageDualGRPO(QwenImage):
     """Training adapter for Qwen-Image with the DualGRPO algorithm."""
+
+    @classmethod
+    def get_fsdp_ignored_module_names(cls, model_config) -> list[str]:
+        # for FSDP2 only
+        # freeze vision tower for Qwen2.5-VL using text-only data
+        return ["visual"]

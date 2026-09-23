@@ -845,7 +845,6 @@ class BaseRayDiffusionTrainer(ABC):
             tool_extra = test_output_gen_batch.non_tensor_batch.get("tool_extra_fields")
             sample_audios.extend(_resolve_rollout_media_field(test_output_gen_batch, tool_extra, "audio"))
             sample_audio_sample_rates.extend(
-
                 _resolve_rollout_media_field(test_output_gen_batch, tool_extra, "audio_sample_rate")
             )
             sample_media_kinds.extend(_resolve_rollout_media_field(test_output_gen_batch, tool_extra, "media_kind"))
