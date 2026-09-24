@@ -82,9 +82,10 @@ def create_composite_training_config(
     model_overrides = [
         "path=" + path,
         "tokenizer_path=" + tokenizer_path,
-        "algorithm=dual_grpo",
+        "algorithm=" + ("dual_grpo" if strategy == "fsdp2" else "dual_grpo_fsdp"),
         "lora_rank=8",
         "lora_alpha=16",
+        "exclude_modules=.*visual.*",
         "attn_backend=native",
         "pipeline.true_cfg_scale=4.0",
         "algo.noise_level=1.2",
@@ -92,9 +93,10 @@ def create_composite_training_config(
         "+ar.override_config.attn_implementation=sdpa",  # new, default is FA2
         "use_remove_padding=True",  # new, AR sp must apply
     ]
+    from verl_omni.utils.diffusion_attention import fa_available
 
-    # if cp > 1 or not fa3_available():
-    #     model_overrides.append("attn_backend=native")
+    if cp > 1 or not fa_available():
+        model_overrides.append("attn_backend=native")
 
     with initialize_config_dir(config_dir=os.path.abspath("verl_omni/trainer/config/diffusion/model")):
         cfg = compose(config_name="diffusion_model", overrides=model_overrides)

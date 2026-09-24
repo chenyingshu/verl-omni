@@ -43,7 +43,7 @@ from verl_omni.pipelines.request_batch import (
     split_diffusion_output_by_request as _split_diffusion_output_by_request,
 )
 
-__all__ = ["QwenImagePipelineWithDualLogProb"]
+__all__ = ["QwenImagePipelineWithDualLogProb", "QwenImagePipelineWithDualLogProbFSDP"]
 
 # system prompt used for DiT
 SYSTEM_PROMPT = (
@@ -525,3 +525,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             num_outputs_per_prompt=num_images_per_prompt,
         )
         return outputs if return_batch else outputs[0]
+
+
+@VllmOmniPipelineBase.register("QwenImagePipeline", algorithm="dual_grpo_fsdp")
+class QwenImagePipelineWithDualLogProbFSDP(QwenImagePipelineWithDualLogProb):
+    """Rollout pipeline of Qwen-Image for Dual-GRPO."""

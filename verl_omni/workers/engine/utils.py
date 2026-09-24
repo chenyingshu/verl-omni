@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import functools
 import types
 from typing import TYPE_CHECKING, Optional
 
@@ -75,7 +74,7 @@ def patch_composite_ar_engine_fsdp_build(
         try:
             module = DiffusersFSDPEngine._build_fsdp_module(self, module)
         finally:
-            self.model_config = saved_model_config # restore model config
+            self.model_config = saved_model_config  # restore model config
 
         # verl diff part:
         if hf_model_config.enable_activation_offload:
@@ -87,12 +86,13 @@ def patch_composite_ar_engine_fsdp_build(
         return module
 
     ar_engine._build_fsdp_module = types.MethodType(_build_fsdp_module, ar_engine)
+    print(f"Monkey patch AR engine {ar_engine.__class__.__name__} _build_fsdp_module with `ignored_names`")
 
 
 # verl monkey patch use
 # TODO: (susan) delete after fixing the bug in verl
 def _get_input_embeds(
-    model: "Qwen2VLForConditionalGeneration",
+    model: Qwen2VLForConditionalGeneration,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     pixel_values: Optional[torch.FloatTensor] = None,
@@ -144,7 +144,7 @@ def _get_input_embeds(
 
 
 def qwen2_vl_base_forward(
-    self: "Qwen2VLForConditionalGeneration",
+    self: Qwen2VLForConditionalGeneration,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     labels: Optional[torch.LongTensor] = None,
@@ -158,49 +158,3 @@ def qwen2_vl_base_forward(
         self, input_ids, attention_mask, pixel_values, pixel_values_videos, image_grid_thw, video_grid_thw
     )  # avoid lora module having multiple keyword arguments
     return self.language_model(input_ids=None, **kwargs)
-
-
-# Bug in pytorch FSDP2
-# TODO: (susan) remove after the verl fix PR got merged and released or new torch version released:
-# https://github.com/verl-project/verl/pull/7475
-# https://github.com/pytorch/pytorch/pull/194058
-def _guard_fsdp2_accumulated_grad() -> None:
-    """Work around an AttributeError in torch's FSDP2 gradient accumulation.
-
-    `FSDPParam.to_accumulated_grad_if_needed` reads `self._unsharded_param`
-    without checking that it exists. That attribute is created by
-    `init_unsharded_param` (which guards its own access with `hasattr`) and
-    dropped by `free_unsharded_param`, so a parameter that never took part in the
-    forward pass does not have it, and training dies with
-
-        AttributeError: 'FSDPParam' object has no attribute '_unsharded_param'
-
-    Seen on a Qwen3.5 VL model under text-only batches, where the vision tower is
-    never gathered. Such a parameter has no unsharded gradient to upcast, which is
-    the case the method already returns early for, so returning is what it means
-    to do.
-
-    Fixed upstream in pytorch/pytorch#194058. This shim keeps verl working on the
-    torch releases that carry the bug and becomes a no-op once the fix lands: it
-    only inserts an early return for the case that would otherwise raise.
-    """
-    try:
-        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
-    except ImportError:
-        return
-
-    original = getattr(FSDPParam, "to_accumulated_grad_if_needed", None)
-    if original is None or getattr(original, "_verl_guarded", False):
-        return
-
-    @functools.wraps(original)
-    def to_accumulated_grad_if_needed(self):
-        if getattr(self, "_unsharded_param", None) is None:
-            return
-        return original(self)
-
-    to_accumulated_grad_if_needed._verl_guarded = True
-    FSDPParam.to_accumulated_grad_if_needed = to_accumulated_grad_if_needed
-
-
-# _guard_fsdp2_accumulated_grad()

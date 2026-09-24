@@ -20,7 +20,7 @@ Inherits model-specific forward/sampling behavior from FlowGRPO.
 from verl_omni.pipelines.model_base import DiffusionModelBase
 from verl_omni.pipelines.qwen_image_flow_grpo.diffusers_training_adapter import QwenImage
 
-__all__ = ["QwenImageDualGRPO"]
+__all__ = ["QwenImageDualGRPO", "QwenImageDualGRPOFSDP"]
 
 
 @DiffusionModelBase.register("QwenImagePipeline", algorithm="dual_grpo")
@@ -32,3 +32,8 @@ class QwenImageDualGRPO(QwenImage):
         # for FSDP2 only
         # freeze vision tower for Qwen2.5-VL using text-only data
         return ["visual"]
+
+
+@DiffusionModelBase.register("QwenImagePipeline", algorithm="dual_grpo_fsdp")
+class QwenImageDualGRPOFSDP(QwenImage):
+    """Training adapter for Qwen-Image with the DualGRPO algorithm."""

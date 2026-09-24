@@ -1585,6 +1585,7 @@ class CompositeFSDPEngine(BaseEngine):
         )
         if engine_config.strategy == "fsdp2":
             patch_composite_ar_engine_fsdp_build(self.ar_engine, model_config)
+            # TODO: (susan) TBD: del module instead, as it does in vllm-omni, or add "_verl_strip_modules" in model ahead
         model_config.model_type = "diffusion_model"
         self.dit_engine = PPODiffusersFSDPEngine(
             model_config=model_config,

@@ -90,7 +90,7 @@ def _make_actor_rollout_worker(
                     "update_weights_bucket_megabytes": 1,
                 },
             },
-            "model": {"lora": {"merge": peft_merge}},
+            "lora": {"merge": peft_merge},
         }
     )
     worker.actor = MagicMock()
@@ -101,6 +101,9 @@ def _make_actor_rollout_worker(
     worker.rollout.use_shm = False
     worker.rollout.zmq_handle = "ipc://test"
     worker.rollout._execute_method = AsyncMock(return_value=None)
+    worker._init_weight_sync_knobs(worker.config)
+    worker._rank = 0
+
     return worker
 
 
@@ -157,7 +160,7 @@ class TestCompositeUpdateWeightsNaive:
 
     @pytest.mark.asyncio
     async def test_lora_first_base_sync_then_adapter(self):
-        engine = _make_composite_engine(dit_lora=True, ar_lora=True)
+        engine = _make_composite_engine(enable_lora=True)
         base_dit = torch.tensor([1.0])
         base_ar = torch.tensor([2.0])
         lora_dit = torch.tensor([3.0])
@@ -212,7 +215,8 @@ class TestCompositeUpdateWeightsNaive:
 
     @pytest.mark.asyncio
     async def test_lora_fast_path_after_base_sync(self):
-        engine = _make_composite_engine(dit_lora=True)
+        # DiT only
+        engine = _make_composite_engine(enable_lora=True)
         lora_tensor = torch.tensor([5.0])
         peft_meta = {"r": 8, "exclude_modules": ".*visual.*"}
         engine.get_per_tensor_param = MagicMock(
@@ -248,7 +252,7 @@ class TestCompositeUpdateWeightsNaive:
 
 class TestCompositeGetPerTensorParamIntegration:
     def test_merge_prefixes_ar_weights_and_peft(self):
-        engine = _make_composite_engine(dit_lora=True, ar_lora=True)
+        engine = _make_composite_engine(enable_lora=True)
         engine.dit_engine.get_per_tensor_param.return_value = (
             iter([("transformer.w", torch.tensor(1.0))]),
             {"r": 8, "lora_alpha": 16},
