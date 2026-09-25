@@ -319,6 +319,30 @@ def test_single_turn(init_config, agent_reward_loop: bool):
                 f"{list(diffusion_result.non_tensor_batch.keys())}."
             )
 
+        if agent_reward_loop:
+            # Fake scores reward/ar=1.0 vs reward/combined=1.5. AR must use the AR
+            # extras (mean of identical 1.0s), not the combined/DiT score.
+            torch.testing.assert_close(
+                ar_result.batch["rm_scores"],
+                torch.full((ar_batch_size, 1), 1.0, dtype=torch.float32),
+            )
+            torch.testing.assert_close(
+                diffusion_result.batch["rm_scores"],
+                torch.full((diffusion_batch_size, 1), 1.5, dtype=torch.float32),
+            )
+            np.testing.assert_allclose(
+                np.asarray(ar_result.non_tensor_batch["reward/ar"], dtype=np.float64),
+                np.full(ar_batch_size, 1.0),
+            )
+            assert list(ar_result.non_tensor_batch["reward/ar/ar_msg"]) == ["dummy_ar_reward_info"] * ar_batch_size
+            assert "reward/combined" not in ar_result.non_tensor_batch
+            assert "reward/dit" not in ar_result.non_tensor_batch
+            assert "reward/ar" not in diffusion_result.non_tensor_batch
+            assert "reward/ar/ar_msg" not in diffusion_result.non_tensor_batch
+            assert list(diffusion_result.non_tensor_batch["reward/dit/dit_msg"]) == (
+                ["dummy_dit_reward_info"] * diffusion_batch_size
+            )
+
         height = init_config.actor_rollout_ref.rollout.pipeline.height
         width = init_config.actor_rollout_ref.rollout.pipeline.width
         prompt_len = init_config.actor_rollout_ref.rollout.prompt_length

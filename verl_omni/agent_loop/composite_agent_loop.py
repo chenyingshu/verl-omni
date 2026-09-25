@@ -25,7 +25,6 @@ AR (LLM/MLLM) + DiT composite architecture, as well as for agentic RL.
 import asyncio
 from typing import Any, Optional
 
-import hydra
 import numpy as np
 import ray
 import torch
@@ -36,8 +35,6 @@ from verl.base_config import BaseConfig
 from verl.experimental.agent_loop.agent_loop import (
     AgentLoopManager,
     AgentLoopMetrics,
-    DictConfigWrap,
-    _agent_loop_registry,
     auto_await,
 )
 from verl.protocol import DataProto
@@ -131,6 +128,15 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         reward_loop_worker_handles: list[ray.actor.ActorHandle] | None = None,
     ):
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
+
+        from verl_omni.reward_loop import MultiVisualRewardManager
+
+        # Assert using MultiVisualManager and set ar.weight to 0
+        assert isinstance(self.reward_loop_worker_handles[0], MultiVisualRewardManager), (
+            "Using MultiVisualRewardManager for AR reward"
+        )
+        ar_weight = self.config.reward.get("reward_functions", {}).get("ar", {}).get("weight", 1.0)
+        assert ar_weight == 0, "AR weight must be 0 when using MultiVisualRewardManager for AR reward"
 
     async def generate_sequences(self, batch: DataProto) -> tuple[DataProto, DataProto]:
         """Generate sequences from agent loop.
@@ -228,34 +234,6 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         diffusion_output = super()._postprocess(diffusion_inputs, input_non_tensor_batch=diffusion_non_tensor_batch)
 
         return ar_output, diffusion_output
-
-    async def _run_agent_loop(
-        self,
-        sampling_params: dict[str, Any],
-        *,
-        agent_name: str,
-        validate: bool = False,
-        **kwargs,
-    ) -> tuple[_InternalARAgentLoopOutput, list[_InternalDiffusionAgentLoopOutput]]:
-        assert agent_name in _agent_loop_registry, (
-            f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
-        )
-
-        agent_loop_config = _agent_loop_registry[agent_name]
-        agent_loop = hydra.utils.instantiate(
-            config=agent_loop_config,
-            trainer_config=DictConfigWrap(config=self.config),
-            server_manager=self.server_manager,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
-            dataset_cls=self.dataset_cls,
-            data_config=DictConfigWrap(self.config.data),
-            extra_tokenizer_map=self.model_config.extra_tokenizer_map,
-        )
-        output: tuple[ARAgentLoopOutput, list[DiffusionAgentLoopOutput]] = await agent_loop.run(
-            sampling_params, **kwargs
-        )
-        return await self._agent_loop_postprocess(output, validate=validate, **kwargs)
 
     # copy from verl.experimental.agent_loop.agent_loop.AgentLoopWorker
     def _pad_token_ids(
