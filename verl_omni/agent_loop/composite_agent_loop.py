@@ -129,14 +129,10 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
     ):
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 
-        from verl_omni.reward_loop import MultiVisualRewardManager
-
-        # Assert using MultiVisualManager and set ar.weight to 0
-        assert isinstance(self.reward_loop_worker_handles[0], MultiVisualRewardManager), (
-            "Using MultiVisualRewardManager for AR reward"
-        )
-        ar_weight = self.config.reward.get("reward_functions", {}).get("ar", {}).get("weight", 1.0)
-        assert ar_weight == 0, "AR weight must be 0 when using MultiVisualRewardManager for AR reward"
+        if self.reward_loop_worker_handles is not None:
+            # Assert set ar.weight to 0
+            ar_weight = self.config.reward.get("reward_functions", {}).get("ar", {}).get("weight", 1.0)
+            assert ar_weight == 0, "AR weight must be 0 for AR reward"
 
     async def generate_sequences(self, batch: DataProto) -> tuple[DataProto, DataProto]:
         """Generate sequences from agent loop.

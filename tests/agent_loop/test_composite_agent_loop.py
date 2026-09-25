@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 import ray
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from verl.protocol import DataProto
 from verl.workers.rollout.llm_server import LLMServerManager
 
@@ -185,7 +185,10 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.max_sequence_length = max_length
         config.actor_rollout_ref.rollout.nnodes = 1
 
-        config.reward.reward_manager.name = "naive"
+        config.reward.reward_manager.name = "MultiVisualRewardManager"
+        # CompositeAgentLoopWorker requires AR weight 0 so MultiVisualRewardManager
+        # does not double-count AR into the combined DiT score.
+        OmegaConf.update(config, "reward.reward_functions.ar.weight", 0.0, force_add=True)
         config.trainer.n_gpus_per_node = requested_gpus
 
         config.data.max_prompt_length = max_length
