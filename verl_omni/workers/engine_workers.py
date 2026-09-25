@@ -76,6 +76,17 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _get_engine_lora_config(engine, adapter_name: str = "default") -> dict | None:
+    """Read adapter metadata without gathering weights, including non-PEFT engines."""
+    get_config = getattr(engine, "get_lora_peft_config", None)
+    if callable(get_config):
+        return get_config(adapter_name=adapter_name)
+    module = getattr(engine, "module", None)
+    module = getattr(module, "_fsdp_wrapped_module", module)
+    config = getattr(module, "peft_config", {}).get(adapter_name)
+    return config.to_dict() if config is not None else None
+
+
 async def _timed_await(name: str, timings: dict, coro):
     """Await ``coro`` while recording its wall-clock duration into ``timings``."""
     start = time.perf_counter()
@@ -745,7 +756,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # Diffusion distillation lives inside diffusion_loss; distillation_ppo_loss is token-level only.
             if is_diffusion:
                 self.loss_fn = partial(diffusion_loss, config=actor_config)
-            elif actor_model_type == "omni_model" and actor_config.trainer_type == "direct_preference":
+            elif (
+                actor_model_type == "omni_model"
+                and getattr(actor_config, "trainer_type", "policy_gradient") == "direct_preference"
+            ):
                 self.loss_fn = partial(omni_loss, config=actor_config)
             elif self.distillation_enabled:
                 self.loss_fn = partial(
@@ -920,12 +934,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self.peft_merge:
             return None
         engine = getattr(self.actor, "engine", None)
-        module = getattr(engine, "module", None) if engine is not None else None
-        peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
-        if peft_model is None or not hasattr(peft_model, "peft_config"):
-            return None
-        peft_config = peft_model.peft_config.get("default", None)
-        result = peft_config.to_dict() if peft_config is not None else None
+        result = _get_engine_lora_config(engine)
         logger.debug("get_lora_peft_config role=%s -> %s", self.role, "LoRA" if result else "none")
         return result
 
@@ -947,9 +956,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         engine = getattr(self.actor, "engine", None)
         module = getattr(engine, "module", None) if engine is not None else None
         peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
-        if peft_model is None or not hasattr(peft_model, "peft_config"):
-            return None
-        if peft_model.peft_config.get("default", None) is None:
+        if _get_engine_lora_config(engine) is None:
             return None
 
         total_sum = 0.0
@@ -991,7 +998,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         assert "actor" in self.role, "ema_update_adapter only supports actor role"
         self.actor.ema_update_adapter(source=source, target=target, decay=decay)
 
-    def _offload_actor_and_empty_cache(self, timings: Optional[dict] = None):
+    def _offload_actor_and_empty_cache(self, timings: Optional[dict] = None, device_index: Optional[int] = None):
         """Offload actor params to CPU and free cached GPU memory.
 
         Safe to run from a worker thread (via ``asyncio.to_thread``): FSDP param
@@ -999,6 +1006,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         tensors live in separate allocations that are unaffected by moving the
         base param storage to CPU.
         """
+        if device_index is not None:
+            get_torch_device().set_device(device_index)
         start = time.perf_counter()
         if self.actor.engine.is_param_offload_enabled:
             self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
@@ -1007,7 +1016,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if timings is not None:
             timings["offload_actor_to_cpu"] = time.perf_counter() - start
 
-    def _gather_lora_weights(self, timings: Optional[dict] = None):
+    def _gather_lora_weights(self, timings: Optional[dict] = None, device_index: Optional[int] = None):
         """Gather LoRA adapter params into a CPU dict, without offloading the actor.
 
         Intended to run in a worker thread (via ``asyncio.to_thread``) so the
@@ -1016,6 +1025,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         CPU (independent allocations), so the subsequent actor offload can run
         concurrently with the rollout-side sync without affecting these tensors.
         """
+        if device_index is not None:
+            get_torch_device().set_device(device_index)
         gather_start = time.perf_counter()
         per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
             layered_summon=self.layered_summon,
@@ -1066,9 +1077,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 0. send_weights only for async training with disaggregated trainer and rollout
         if effective_mode != "naive":
-            actor_module = getattr(self.actor.engine, "module", None)
-            peft_module = getattr(actor_module, "_fsdp_wrapped_module", actor_module)
-            actor_has_lora = peft_module is not None and hasattr(peft_module, "peft_config")
+            actor_has_lora = _get_engine_lora_config(self.actor.engine, self.rollout_adapter) is not None
 
             if actor_has_lora and not self.peft_merge:
                 logger.debug(
@@ -1106,12 +1115,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 _timed_await("resume_weights", timings, self.rollout.resume(tags=["weights"]))
             )
 
-        # 2. Detect the actor's adapter setup *without* triggering the heavy param
-        #    gather (which runs collectives), so the right path can be chosen up
-        #    front. ``actor_has_lora`` is a cheap attribute check.
-        actor_module = getattr(self.actor.engine, "module", None)
-        peft_module = getattr(actor_module, "_fsdp_wrapped_module", actor_module)
-        actor_has_lora = peft_module is not None and hasattr(peft_module, "peft_config")
+        # 2. Read adapter metadata without triggering a collective parameter gather.
+        actor_has_lora = _get_engine_lora_config(self.actor.engine, self.rollout_adapter) is not None
         # Steady-state LoRA (base already synced) can overlap the *entire* gather +
         # actor offload with resume; the first base sync still needs the slow path.
         use_lora_fast_path = actor_has_lora and not self.peft_merge and self.base_sync_done
@@ -1132,13 +1137,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             #       allocations, so moving the base param storage to CPU cannot
             #       corrupt the in-flight sync.
             self.rollout.sleep_level = 1
-            gather_task = asyncio.create_task(asyncio.to_thread(self._gather_lora_weights, timings))
+            torch_device = get_torch_device()
+            device_index = torch_device.current_device() if torch_device.is_available() else None
+            if device_index is None:
+                gather_task = asyncio.create_task(asyncio.to_thread(self._gather_lora_weights, timings))
+            else:
+                gather_task = asyncio.create_task(asyncio.to_thread(self._gather_lora_weights, timings, device_index))
             if resume_weights_task is not None:
                 await resume_weights_task
             log_gpu_memory_usage("After resume weights", logger=logger)
             lora_weights, peft_config = await gather_task
             # Launch the actor offload in the background so it overlaps the sync.
-            offload_task = asyncio.create_task(asyncio.to_thread(self._offload_actor_and_empty_cache, timings))
+            if device_index is None:
+                offload_task = asyncio.create_task(asyncio.to_thread(self._offload_actor_and_empty_cache, timings))
+            else:
+                offload_task = asyncio.create_task(
+                    asyncio.to_thread(self._offload_actor_and_empty_cache, timings, device_index)
+                )
 
             # Use ZMQ IPC to transfer LoRA weights, bypassing Ray serialization.
             # Broadcast only the update id. Each vLLM worker combines it with its
