@@ -397,15 +397,6 @@ actor_rollout_ref:
       sde_contiguous: ${oc.select:actor_rollout_ref.rollout.algo.sde_contiguous,true}
     ar:
       _target_: verl_omni.workers.config.diffusion.DiffusionModelARConfig
-      use_shm: false
-      trust_remote_code: false
-      enable_gradient_checkpointing: true
-      lora_rank: 0
-      lora_alpha: 64
-      target_modules: all-linear
-      target_parameters: null
-      exclude_modules: null
-      lora_adapter_path: null
       override_config: {}
     model_type: diffusion_model
   separate: false

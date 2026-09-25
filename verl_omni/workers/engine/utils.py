@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import types
 from typing import TYPE_CHECKING, Optional
 
@@ -28,6 +29,31 @@ from verl_omni.workers.config import DiffusionModelConfig
 if TYPE_CHECKING:
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
 
+logger = logging.getLogger(__name__)
+
+
+def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
+    """Drop Qwen2.5-VL vision tower for Qwen-Image before FSDP wrap (matches vLLM-Omni Qwen-Image).
+
+    Qwen-Image trains text-only AR on the pipeline text encoder; the vision tower is
+    unused and must not remain trainable under FSDP2 ``ignored_params``. Deleting it
+    mirrors ``vllm_omni`` ``QwenImagePipeline`` and avoids keeping dead GPU params.
+
+    Handles both Transformers layouts: ``module.model.visual`` (newer) and
+    ``module.visual`` (older).
+    """
+    visual_owner = None
+    if hasattr(module, "model") and hasattr(module.model, "visual"):
+        visual_owner = module.model
+    elif hasattr(module, "visual"):
+        visual_owner = module
+    if visual_owner is None:
+        logger.warning("Qwen-VL vision tower not found on AR module; skipping strip")
+        return False
+    del visual_owner.visual
+    logger.info("Stripped Qwen-VL vision tower from composite AR module")
+    return True
+
 
 def patch_composite_ar_engine_fsdp_build(
     ar_engine: FSDPEngineWithLMHead,
@@ -39,6 +65,10 @@ def patch_composite_ar_engine_fsdp_build(
     ``verl.utils.fsdp_utils.apply_fsdp2`` without ``ignored_names``. verl-omni's diffusers
     engine passes adapter-declared subtrees into ``verl_omni.utils.fsdp_utils.apply_fsdp2``
     so frozen towers skipped on some micro-batches stay unsharded under FSDP2.
+
+    Optional: for Qwen-Image only, strips the Qwen-VL vision tower
+    (same as vLLM-Omni Qwen-Image rollout) before wrap
+    so training does not leave a trainable ignored subtree.
     """
     ar_engine._verl_omni_diffusion_model_config = diffusion_model_config
 
@@ -66,9 +96,14 @@ def patch_composite_ar_engine_fsdp_build(
         else:
             self.scaler = None
 
+        # Monkey patch for Qwen-Image only
+        # Match vLLM-Omni: Qwen-Image never uses the vision tower on text-only data.
+        if diffusion_cfg.path.endswith("Qwen-Image"):
+            strip_qwen_image_vision_tower(module)
+
         # apply verl-omni _build_fsdp_module
         # temporarily sets self.model_config to DiffusionModelConfig
-        # so DiffusionModelBase.get_class(...).get_fsdp_ignored_module_names(...) resolves (e.g. DualGRPO ["visual"]).
+        # so DiffusionModelBase.get_class(...).get_fsdp_ignored_module_names(...) resolves.
         saved_model_config = self.model_config
         self.model_config = diffusion_cfg
         try:

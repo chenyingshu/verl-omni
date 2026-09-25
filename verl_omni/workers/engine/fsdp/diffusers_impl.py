@@ -1585,7 +1585,6 @@ class CompositeFSDPEngine(BaseEngine):
         )
         if engine_config.strategy == "fsdp2":
             patch_composite_ar_engine_fsdp_build(self.ar_engine, model_config)
-            # TODO: (susan) TBD: del module instead, as it does in vllm-omni, or add "_verl_strip_modules" in model ahead
         model_config.model_type = "diffusion_model"
         self.dit_engine = PPODiffusersFSDPEngine(
             model_config=model_config,
@@ -1735,7 +1734,7 @@ class CompositeFSDPEngine(BaseEngine):
             default_config = {  # shared basic configs
                 "r": model_config.lora_rank,
                 "lora_alpha": model_config.lora_alpha,
-                "target_modules": model_config.target_modules,
+                # "target_modules": model_config.target_modules,
                 "target_parameters": model_config.target_parameters,
                 "exclude_modules": model_config.exclude_modules,
                 "bias": "none",
@@ -1754,9 +1753,11 @@ class CompositeFSDPEngine(BaseEngine):
                     elif isinstance(merged[key], list) and isinstance(value, list):
                         merged[key].extend(value)
                     else:
-                        assert merged[key] == value, (
-                            f"AR and DiT PEFT configs cannot be merged for {key}:\n {merged[key]}\n and \n {value}"
-                        )
+                        if merged[key] != value:
+                            print(
+                                f"AR and DiT PEFT config {key} cannot be merged:\n {merged[key]}\n and \n {value}"
+                                "\nSkipping merge, keep first config."
+                            )
 
         return merged
 

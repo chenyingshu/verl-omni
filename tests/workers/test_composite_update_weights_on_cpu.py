@@ -75,9 +75,11 @@ def _make_actor_rollout_worker(
     worker = ActorRolloutRefWorker.__new__(ActorRolloutRefWorker)
     worker.role = "actor_rollout"
     worker.peft_merge = peft_merge
-    worker.base_sync_done = base_sync_done
     worker.layered_summon = False
     worker._zmq_update_seq = 0
+    # base_sync_done is derived from load_format in _init_weight_sync_knobs (dummy => False).
+    if not base_sync_done:
+        load_format = "dummy"
     worker.config = OmegaConf.create(
         {
             "rollout": {
@@ -152,9 +154,9 @@ class TestCompositeUpdateWeightsNaive:
             await worker.update_weights(global_steps=1, mode="naive")
 
         worker.rollout.update_weights.assert_awaited_once()
-        call_kwargs = worker.rollout.update_weights.call_args.kwargs
-        assert call_kwargs["base_sync_done"] is True
-        synced = dict(call_kwargs["per_tensor_param"])
+        call_args = worker.rollout.update_weights.call_args
+        assert call_args.kwargs["base_sync_done"] is True
+        synced = dict(call_args.args[0])
         assert synced["transformer.blocks.0.weight"] is dit_tensor
         assert synced["text_encoder.model.layers.0.weight"] is ar_tensor
 
@@ -190,21 +192,20 @@ class TestCompositeUpdateWeightsNaive:
             )
 
         engine.get_per_tensor_param = MagicMock(side_effect=fake_get_per_tensor)
-        worker = _make_actor_rollout_worker(engine, base_sync_done=False, load_format="safetensors")
+        worker = _make_actor_rollout_worker(engine, base_sync_done=False)
 
         with (
             patch.object(engine_workers_module, "set_expandable_segments"),
             patch.object(engine_workers_module, "log_gpu_memory_usage"),
             patch.object(engine_workers_module, "aggressive_empty_cache"),
-            patch.object(engine_workers_module, "BucketedWeightSender"),
             patch.object(worker, "_offload_actor_and_empty_cache"),
         ):
             await worker.update_weights(global_steps=0, mode="naive")
 
         assert worker.rollout.update_weights.await_count == 2
         base_call, adapter_call = worker.rollout.update_weights.await_args_list
-        base_weights = dict(base_call.kwargs["per_tensor_param"])
-        adapter_weights = dict(adapter_call.kwargs["per_tensor_param"])
+        base_weights = dict(base_call.args[0])
+        adapter_weights = dict(adapter_call.args[0])
         assert base_call.kwargs["base_sync_done"] is False
         assert adapter_call.kwargs["base_sync_done"] is True
         assert "transformer.blocks.0.weight" in base_weights

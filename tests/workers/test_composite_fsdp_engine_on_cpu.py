@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -408,3 +409,32 @@ class TestCompositeEngineCtx:
         with ctx:
             engine.dit_engine.eval_mode.assert_called_once_with()
         dit_ctx.__exit__.assert_called_once()
+
+
+class TestStripQwenVlVisionTower:
+    def test_strips_nested_model_visual(self):
+        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
+
+        module = torch.nn.Module()
+        module.model = torch.nn.Module()
+        module.model.visual = torch.nn.Linear(4, 4)
+        assert strip_qwen_image_vision_tower(module) is True
+        assert not hasattr(module.model, "visual")
+
+    def test_strips_top_level_visual(self):
+        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
+
+        module = torch.nn.Module()
+        module.visual = torch.nn.Linear(4, 4)
+        assert strip_qwen_image_vision_tower(module) is True
+        assert not hasattr(module, "visual")
+
+    def test_returns_false_when_missing(self):
+        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
+
+        assert strip_qwen_image_vision_tower(torch.nn.Module()) is False
+
+    def test_dual_grpo_no_longer_ignores_visual_under_fsdp2(self):
+        from verl_omni.pipelines.qwen_image_dual_grpo.diffusers_training_adapter import QwenImageDualGRPO
+
+        assert QwenImageDualGRPO.get_fsdp_ignored_module_names(SimpleNamespace()) == []

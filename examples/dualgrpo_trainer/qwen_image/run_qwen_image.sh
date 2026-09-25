@@ -1,4 +1,4 @@
-# Qwen-Image LoRA DualGRPO RL, vllm_omni rollout
+# Qwen-Image full-weight DualGRPO RL, vllm_omni rollout
 set -x
 
 export FLASHINFER_DISABLE_VERSION_CHECK=1
@@ -51,9 +51,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.model.algorithm=dual_grpo \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.attn_backend=${ATTN_BACKEND} \
-    actor_rollout_ref.model.lora_rank=8 \
-    actor_rollout_ref.model.lora_alpha=16 \
-    actor_rollout_ref.model.exclude_modules=".*visual.*" \
     actor_rollout_ref.rollout.rollout_attn_backend=${ROLLOUT_ATTN_BACKEND} \
     actor_rollout_ref.actor.optim.lr=3e-5 \
     actor_rollout_ref.actor.optim.weight_decay=0.0001 \
