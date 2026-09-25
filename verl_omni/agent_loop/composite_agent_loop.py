@@ -175,6 +175,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
 
         is_validate = batch.meta_info.get("validate", False)
         per_rollout_seeds: Optional[list[int]] = None
+        ar_seeds: Optional[list[int]] = None
         diffusion_n = config.val_kwargs.n if is_validate else config.n
 
         if is_validate:
@@ -191,9 +192,16 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             sampling_params["ar_logprobs"] = False
         else:
             sampling_params["global_steps"] = batch.meta_info["global_steps"]
-            # Prefer trainer-assigned global indices so chunked workers derive the
-            # same per-row seed regardless of local batch position / pack order.
-            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, None)
+            # Trainer sets one global id per AR row. Expand to diffusion_n DiT rows so
+            # chunked workers keep disjoint seeds (local 0-based range would collide).
+            global_indices = batch.non_tensor_batch.get("_rollout_seed_global_idx")
+            ar_global_indices = None
+            dit_global_indices = None
+            if global_indices is not None:
+                ar_global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
+                dit_global_indices = np.repeat(ar_global_indices, diffusion_n)
+            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, dit_global_indices)
+            ar_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch), ar_global_indices)
 
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop
@@ -209,6 +217,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             else:
                 kwargs["per_rollout_seeds"] = None
             task_sampling_params = sampling_params.copy()
+            if ar_seeds is not None:
+                task_sampling_params["seed"] = ar_seeds[i]
             tasks.append(
                 asyncio.create_task(self._run_agent_loop(task_sampling_params, validate=is_validate, **kwargs))
             )
@@ -491,7 +501,19 @@ class CompositeAgentLoopManager(AgentLoopManager):
         llm_client: LLMServerClient,
         teacher_client: dict[str, LLMServerClient] | None = None,
         reward_loop_worker_handles: list[ray.actor.ActorHandle] | None = None,
+        allow_without_composite_trainer: bool = False,
     ):
+        # Tuple ``(ar_batch, diffusion_batch)`` is not wired into
+        # ``ray_diffusion_trainer`` yet (dies at ``gen_batch_output.meta_info``).
+        # Block config-reachable construction until the 3/N composite trainer lands.
+        if not allow_without_composite_trainer:
+            raise NotImplementedError(
+                "CompositeAgentLoopManager returns (ar_batch, diffusion_batch) and requires "
+                "the composite trainer; ray_diffusion_trainer still expects a single "
+                "DataProto. Do not set actor_rollout_ref.rollout.agent.agent_loop_manager_class "
+                "to this class until that trainer ships. Smoke tests may pass "
+                "allow_without_composite_trainer=True."
+            )
         self.agent_loop_workers_class = ray.remote(CompositeAgentLoopWorker)
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 
@@ -499,6 +521,11 @@ class CompositeAgentLoopManager(AgentLoopManager):
     @SkipManager.annotate(role="rollout")
     async def generate_sequences(self, prompts: DataProto) -> tuple[DataProto, DataProto]:
         """Gather ``(ar_batch, diffusion_batch)`` tuples from composite workers."""
+
+        # Attach per-sample priority before chunking so workers get disjoint ranges
+        # without per-worker offsets (same as verl AgentLoopManager.generate_sequences).
+        if "priority" not in prompts.non_tensor_batch:
+            prompts.non_tensor_batch["priority"] = np.arange(len(prompts), dtype=np.int64)
 
         chunks = prompts.chunk(len(self.agent_loop_workers))
         outputs = await asyncio.gather(

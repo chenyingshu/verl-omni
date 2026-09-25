@@ -225,6 +225,7 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             config=init_config,
             llm_client=llm_server_manager.get_client(),
             reward_loop_worker_handles=[dit_reward_handle] if agent_reward_loop else None,
+            allow_without_composite_trainer=True,
         )
 
         system_prompt = (

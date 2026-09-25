@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -45,6 +46,8 @@ from verl_omni.pipelines.request_batch import (
 
 __all__ = ["QwenImagePipelineWithDualLogProb"]
 
+logger = logging.getLogger(__name__)
+
 # system prompt used for DiT
 SYSTEM_PROMPT = (
     "Describe the image by detailing the color, shape, size, texture, quantity, "
@@ -69,7 +72,11 @@ def extract_prompt(texts: list[str]) -> str:
         m = re.search(r"Revised Prompt:\n(.*)", text, re.DOTALL)
         if not m:
             m = re.search(r"Revised Prompt:(.*)", text, re.DOTALL)
-        refined_prompt = m.group(1).strip() if m else text.strip()
+        if m:
+            refined_prompt = m.group(1).strip()
+        else:
+            logger.warning("Revised Prompt: regex missed; feeding full CoT into DiT.")
+            refined_prompt = text.strip()
         refined_prompts.append(refined_prompt)
     return refined_prompts
 
