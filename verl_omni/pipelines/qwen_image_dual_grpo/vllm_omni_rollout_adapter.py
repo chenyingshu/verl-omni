@@ -76,7 +76,7 @@ def _token_rows_to_lists(value: torch.Tensor) -> list[list[int]]:
     return value.detach().cpu().tolist()
 
 
-def extract_prompt(texts: list[str]) -> str:
+def extract_prompt(texts: list[str]) -> list[str]:
     """Extracts the refined prompt from the model's reasoning output."""
     refined_prompts = []
     for text in texts:
