@@ -17,10 +17,12 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import numpy as np
 import torch
 from verl.utils.torch_functional import get_response_mask
 from vllm_omni.diffusion.data import DiffusionOutput
@@ -115,6 +117,12 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         **ar_kwargs,
     ):
         # ref： https://github.com/verl-project/verl/blob/main/verl/workers/rollout/hf_rollout.py#L54
+        seed = ar_kwargs.pop("seed", None)
+        if seed is not None:
+            seed = int(seed)
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
 
         outputs = self.text_encoder.generate(
             input_ids=prompt_ids.to(self.device),
@@ -321,7 +329,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
                 do_sample=True,
             )
             if sampling_params.seed is not None:
-                ar_kwargs["generator"] = torch.Generator(device=self.device).manual_seed(int(sampling_params.seed))
+                ar_kwargs["seed"] = int(sampling_params.seed)
             # generation
             num_responses_per_prompt = 1
             response = self.generate_text_encoder_response(
