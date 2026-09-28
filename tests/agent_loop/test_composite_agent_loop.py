@@ -86,8 +86,7 @@ def _assert_ar_outputs(result: DataProto, *, batch_size: int, prompt_len: int, m
     assert ar_input_ids.shape == (batch_size, prompt_len + max_token_len)
     assert ar_response_ids.shape == (batch_size, max_token_len)
     if ar_all_log_probs is not None:
-        assert ar_all_log_probs.shape[1] == max_token_len
-        assert ar_all_log_probs.shape == (batch_size, ar_all_log_probs.shape[1], ar_all_log_probs.shape[-1])
+        assert ar_all_log_probs.shape == (batch_size, max_token_len)
     assert ar_attention_mask.shape == (batch_size, prompt_len + max_token_len)
     assert ar_attention_mask.dtype == torch.long
     assert ar_attention_mask.min() >= 0 and ar_attention_mask.max() <= 1
@@ -158,8 +157,7 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.step_execution = False
         # Keep the 2-GPU TP smoke light; CI EOFError on worker launch is usually OOM.
         # Keep enough inference steps for sde_window_range=[0, 5] / sde_window_size=2.
-        config.actor_rollout_ref.rollout.n = 2  # dit part
-        config.actor_rollout_ref.rollout.m = 2  # ar part
+        config.actor_rollout_ref.rollout.n = 2  # dit samples per AR row
         config.actor_rollout_ref.rollout.pipeline.height = 256
         config.actor_rollout_ref.rollout.pipeline.width = 256
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
@@ -264,13 +262,15 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             },
         )
         batch.meta_info["global_steps"] = 0
-        ar_n = init_config.actor_rollout_ref.rollout.m
+        # Trainer-side AR expansion is deferred; smoke-test the worker with a local
+        # pre-repeat so one prompt yields multiple AR rows (then n DiT images each).
+        ar_repeat = 2
         diffusion_n = init_config.actor_rollout_ref.rollout.n
-        batch = batch.repeat(ar_n)
+        batch = batch.repeat(ar_repeat)
 
         ar_result, diffusion_result = agent_loop_manager.generate_sequences(prompts=batch)
-        ar_batch_size = len(raw_prompts) * ar_n
-        diffusion_batch_size = len(raw_prompts) * ar_n * diffusion_n
+        ar_batch_size = len(raw_prompts) * ar_repeat
+        diffusion_batch_size = len(raw_prompts) * ar_repeat * diffusion_n
         assert len(ar_result) == ar_batch_size
         assert len(diffusion_result) == diffusion_batch_size
 

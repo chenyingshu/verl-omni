@@ -65,9 +65,9 @@ class ARAgentLoopOutput(BaseModel):
     prompt_ids: list[int]
     """Input ids of raw input prompt"""
     response_ids: list[int]
-    """Full response AR tokens output (torch.Tensor)."""
+    """AR response token ids."""
     response_mask: list[int]
-    """Attention mask for padded response tokens (torch.Tensor)."""
+    """1 for generated AR tokens, 0 after EOS."""
     refined_prompt: Any
     """Refined rewritten prompt in chat-message form for diffusion."""
     ar_response_logprobs: Optional[Any] = None
@@ -318,21 +318,23 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             return_attention_mask=True,
         )
 
+        response_length = self.rollout_config.ar.response_length
         response_output = self._pad_token_ids(
             output.response_ids,
-            max_length=self.rollout_config.ar.response_length,
+            max_length=response_length,
             padding_side="right",
             return_attention_mask=True,
         )
 
-        response_mask_output = self._pad_token_ids(
-            output.response_mask,
-            max_length=self.rollout_config.ar.response_length,
-            padding_side="right",
-            return_attention_mask=False,
-        )
-
-        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+        # Zero-pad the 0/1 mask. tokenizer.pad would write pad_token_id into the tail.
+        if len(output.response_mask) > response_length:
+            raise ValueError(
+                f"AR response_mask length {len(output.response_mask)} exceeds ar.response_length={response_length}."
+            )
+        response_mask = torch.zeros((1, response_length), dtype=torch.long)
+        if output.response_mask:
+            response_mask[0, : len(output.response_mask)] = torch.tensor(output.response_mask, dtype=torch.long)
+        response_mask = response_mask * response_output["attention_mask"]
 
         # token ids and attention mask forprompt + response
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
@@ -352,7 +354,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             if isinstance(ar_response_logprobs, list):
                 pad_size = self.rollout_config.ar.response_length - len(output.ar_response_logprobs)
                 ar_response_logprobs = torch.tensor(ar_response_logprobs + [0.0] * pad_size).unsqueeze(0)
-            if ar_response_logprobs.dim() == 2:
+            elif ar_response_logprobs.dim() == 1:
+                # Unbatch of (B, response_length) leaves one row.
                 ar_response_logprobs = ar_response_logprobs.unsqueeze(0)
 
         prompt_ids = prompt_output["input_ids"]  # padded prompt ids

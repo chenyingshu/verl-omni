@@ -112,9 +112,6 @@ disable_log_stats: True
 # number of responses (i.e. num sample times). > 1 for grpo
 n: 1
 
-# Optional stage 2: number of diffusion responses (i.e. num sample times). > 1 for grpo
-m: 1
-
 # Base seed for deterministic training rollout RNG.
 # Per-step base is ``seed + global_step - 1``. null disables rollout seeding.
 seed: 42
@@ -154,9 +151,6 @@ val_kwargs:
 
   # whether to repeat n times for validation
   n: 1
-
-  # AR stage: number of samples per prompt during validation (composite rollouts)
-  m: 1
 
   # Pipeline configuration for validation
   pipeline:

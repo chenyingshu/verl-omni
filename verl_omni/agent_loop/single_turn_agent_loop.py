@@ -251,8 +251,8 @@ class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
         self, sampling_params: dict[str, Any], **kwargs
     ) -> tuple[ARAgentLoopOutput, list[DiffusionAgentLoopOutput]]:
         """Run two-stage ar generation->diffusion generation and package agent-loop output.
-        Stage 1: Input one raw prompt, generate one refined prompt.
-        Stage 2: Duplicate M refined prompts, generate M images.
+        Stage 1: Input one raw prompt, generate one refined prompt (chat messages).
+        Stage 2: Generate ``diffusion_n`` images from that single refined prompt.
 
         Args:
             sampling_params: Generation parameters forwarded to the server manager.
@@ -269,7 +269,7 @@ class CompositeSingleTurnAgentLoop(DiffusionSingleTurnAgentLoop):
 
         # Stage 2: images generation using the refined prompt from stage 1.
         sampling_params["stage"] = "diffusion"
-        diffusion_kwargs = {**kwargs, "raw_prompt": [ar_output.refined_prompt]}
+        diffusion_kwargs = {**kwargs, "raw_prompt": ar_output.refined_prompt}
         tasks = []
         diffusion_n = diffusion_kwargs.pop("diffusion_n")
         per_rollout_seeds = diffusion_kwargs.pop("per_rollout_seeds", None)

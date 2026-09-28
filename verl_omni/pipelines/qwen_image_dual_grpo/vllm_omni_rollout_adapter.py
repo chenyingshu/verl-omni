@@ -65,6 +65,15 @@ class TextEncoderGenerationResult:
     text_encoder_responses: list[str]  # CoT + refined prompt texts
 
 
+def _token_rows_to_lists(value: torch.Tensor) -> list[list[int]]:
+    """One ``list[int]`` per batch row.
+
+    Request split indexes the leading axis, then ``_maybe_unbatch`` unwraps that
+    row to the flat list ``_pad_token_ids`` expects.
+    """
+    return value.detach().cpu().tolist()
+
+
 def extract_prompt(texts: list[str]) -> str:
     """Extracts the refined prompt from the model's reasoning output."""
     refined_prompts = []
@@ -115,14 +124,6 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             **ar_kwargs,
         )
         max_new_tokens = ar_kwargs["max_new_tokens"]
-        if return_logprobs:
-            scores = torch.stack(outputs.scores, dim=1)  # B x response_length x vocab_size
-            logprobs = torch.nn.functional.log_softmax(scores, dim=-1)
-            # Padding: B x max_response_length x vocab_size
-            if logprobs.shape[1] < max_new_tokens:
-                logprobs = torch.nn.functional.pad(logprobs, (0, 0, 0, max_new_tokens - logprobs.shape[1]), value=0.0)
-        else:
-            logprobs = None
 
         # huggingface generate will stop generating when all the batch reaches [EOS].
         # We have to pad to response_length
@@ -137,6 +138,17 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
 
         output_ids = seq[:, prompt_ids.shape[1] :]  # remove prompt prefix
         output_texts = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)  # CoT+refined prompt
+
+        logprobs = None
+        if return_logprobs:
+            scores = torch.stack(outputs.scores, dim=1)  # B x gen_len x vocab_size
+            full_logprobs = torch.nn.functional.log_softmax(scores, dim=-1)
+            gen_len = full_logprobs.shape[1]
+            # Logprob of the sampled token only: (B, gen_len), not the full vocab.
+            token_logprobs = full_logprobs.gather(-1, output_ids[:, :gen_len].unsqueeze(-1)).squeeze(-1)
+            if gen_len < max_new_tokens:
+                token_logprobs = torch.nn.functional.pad(token_logprobs, (0, max_new_tokens - gen_len), value=0.0)
+            logprobs = token_logprobs
 
         return output_ids, logprobs, output_texts
 
@@ -168,7 +180,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             ``ar_position_ids``: tensor of shape ``(B * num_responses_per_prompt, input_len+response_length)``
             ``ar_response_ids``: tensor of shape ``(B * num_responses_per_prompt, response_length)``
             ``ar_response_mask``: tensor of shape ``(B * num_responses_per_prompt, response_length)``
-            ``ar_all_log_probs``: tensor of shape ``(B * num_responses_per_prompt, response_length, vocab_size)``
+            ``ar_all_log_probs``: tensor of shape ``(B * num_responses_per_prompt, response_length)``
             ``text_encoder_responses``: a list of ``B * num_responses_per_prompt`` CoT + refined prompt texts
 
         """
@@ -197,9 +209,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
 
         ar_response_ids = torch.cat(ar_response_ids_list, dim=0)  # B*num_responses_per_prompt x response_length
         if return_logprobs:
-            ar_all_log_probs = torch.cat(
-                ar_all_log_probs, dim=0
-            )  # B*num_responses_per_prompt x response_length x vocab_size
+            ar_all_log_probs = torch.cat(ar_all_log_probs, dim=0)  # B*num_responses_per_prompt x response_length
         else:
             ar_all_log_probs = None
 
@@ -207,6 +217,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         response_mask = get_response_mask(
             response_id=ar_response_ids, eos_token=self.tokenizer.eos_token_id, dtype=attention_mask.dtype
         )  # B*num_responses_per_prompt x seq_len
+        if ar_all_log_probs is not None:
+            ar_all_log_probs = ar_all_log_probs * response_mask.to(dtype=ar_all_log_probs.dtype)
 
         return TextEncoderGenerationResult(
             ar_response_ids=ar_response_ids,
@@ -308,6 +320,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
                 repetition_penalty=repetition_penalty,
                 do_sample=True,
             )
+            if sampling_params.seed is not None:
+                ar_kwargs["generator"] = torch.Generator(device=self.device).manual_seed(int(sampling_params.seed))
             # generation
             num_responses_per_prompt = 1
             response = self.generate_text_encoder_response(
@@ -333,8 +347,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             result = rollout_output(
                 media=image,
                 rl={
-                    "ar_response_ids": response.ar_response_ids,
-                    "ar_response_mask": response.ar_response_mask,
+                    "ar_response_ids": _token_rows_to_lists(response.ar_response_ids),
+                    "ar_response_mask": _token_rows_to_lists(response.ar_response_mask),
                     "ar_all_log_probs": response.ar_log_probs,
                     "refined_prompt": messages,  # formatted prompt
                     "text_encoder_responses": response.text_encoder_responses,  # CoT + prompt
