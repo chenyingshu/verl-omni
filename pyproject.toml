@@ -47,19 +47,16 @@ dependencies = [
     "math_verify",
     "tensorboard",
     "TransferQueue==0.1.9",
+    "vllm==0.28.0",
+    "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@ded8934626aaad1a3e816c3a1d9d742efc012d93",
+    "verl @ git+https://github.com/verl-project/verl.git@fefb080262e1c015a0ea05f958822a6a512dc795",
 ]
 
 [project.optional-dependencies]
-# Rollout engine (install in step 2, after gpu step 1).
-vllm-omni = [
-    "vllm-omni==0.28.0rc1",
-]
 audio = [
     "qwen-omni-utils>=0.0.9",
     "audioread",
 ]
-# Install qwen-tts separately from the pinned upstream Transformers 5 support
-# revision. The released 0.1.1 source and metadata target Transformers 4.57.3.
 omni = [
     "einops>=0.8.0",
     "librosa>=0.10.2",
@@ -68,19 +65,15 @@ omni = [
     "sox>=1.5.0",
     "torchaudio>=2.11.0",
     "av",
-]
-# CUDA rollout backend (vllm) + actor FA3 (kernels) + liger-kernel. Install in step 1 on GPU.
-gpu = [
-    "vllm==0.28.0",
-    "kernels==0.16.0",
-    "liger-kernel",
-    "pyzmq",
     "qwen-vl-utils>=0.0.14",
 ]
-# Training stack (install in step 2).
-# Git commit must match .github/verl_pin.txt (reports as 0.10.0.dev at fefb080).
-train = [
-    "verl @ git+https://github.com/verl-project/verl.git@fefb080262e1c015a0ea05f958822a6a512dc795",
+fa2 = [
+    "flash-attn>=2.8.3",
+]
+gpu = [
+    "kernels==0.16.0",
+    "liger-kernel",
+    "cupy-cuda13x",
 ]
 dev = [
     "pytest",
@@ -89,7 +82,6 @@ dev = [
     "py-spy",
     "pytest-asyncio",
     "pytest-rerunfailures",
-    "Levenshtein",
 ]
 ocr = [
     "Levenshtein",
