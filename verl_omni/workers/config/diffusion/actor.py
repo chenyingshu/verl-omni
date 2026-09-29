@@ -77,8 +77,9 @@ class DiffusionLossConfig(BaseConfig):
 class DiffusionActorARConfig(BaseConfig):
     # AR part actor config
     # use when training AR part
-    entropy_coeff: float = 0
+
     calculate_entropy: bool = False
+    entropy_coeff: float = 0
 
 
 @dataclass

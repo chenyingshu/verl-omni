@@ -43,21 +43,26 @@ def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
     ``module.visual`` (older).
     """
     visual_owner = None
-    if hasattr(module, "model") and hasattr(module.model, "visual"):
+    if hasattr(module, "model") and hasattr(module.model, "visual"):  # full weights
         visual_owner = module.model
-    elif hasattr(module, "visual"):
+    elif hasattr(module, "model") and hasattr(module.model, "model") and hasattr(module.model.model, "visual"):  # lora
         visual_owner = module
     if visual_owner is None:
-        logger.warning("Qwen-VL vision tower not found on AR module; skipping strip")
+        logger.warning("Qwen-VL vision tower not found on Qwen-ImageAR module; skipping strip")
         return False
     del visual_owner.visual
-    logger.info("Stripped Qwen-VL vision tower from composite AR module")
+
+    # verl still run a dummy visual forward pass
+    visual_owner.visual = lambda *args, **kwargs: 0.0
+
+    logger.info("Stripped Qwen-VL vision tower from Qwen-Image AR module")
     return True
 
 
-def patch_composite_ar_engine_fsdp_build(
+def patch_composite_ar_engine_module_build(
     ar_engine: FSDPEngineWithLMHead,
     diffusion_model_config: DiffusionModelConfig,
+    strategy: str = "fsdp",
 ) -> None:
     """Use ``DiffusersFSDPEngine._build_fsdp_module`` for the composite AR backend.
 
@@ -71,6 +76,15 @@ def patch_composite_ar_engine_fsdp_build(
     so training does not leave a trainable ignored subtree.
     """
     ar_engine._verl_omni_diffusion_model_config = diffusion_model_config
+    ar_engine._original_build_module = ar_engine._build_module
+
+    def _build_module(self):
+        module = self._original_build_module()
+        # Monkey patch for Qwen-Image only
+        # Match vLLM-Omni: Qwen-Image never uses the vision tower on text-only data.
+        if self._verl_omni_diffusion_model_config.path.endswith("Qwen-Image"):
+            strip_qwen_image_vision_tower(module)
+        return module
 
     def _build_fsdp_module(self, module):
         from verl.utils.activation_offload import enable_activation_offloading
@@ -96,11 +110,6 @@ def patch_composite_ar_engine_fsdp_build(
         else:
             self.scaler = None
 
-        # Monkey patch for Qwen-Image only
-        # Match vLLM-Omni: Qwen-Image never uses the vision tower on text-only data.
-        if diffusion_cfg.path.endswith("Qwen-Image"):
-            strip_qwen_image_vision_tower(module)
-
         # apply verl-omni _build_fsdp_module
         # temporarily sets self.model_config to DiffusionModelConfig
         # so DiffusionModelBase.get_class(...).get_fsdp_ignored_module_names(...) resolves.
@@ -120,8 +129,12 @@ def patch_composite_ar_engine_fsdp_build(
             )
         return module
 
-    ar_engine._build_fsdp_module = types.MethodType(_build_fsdp_module, ar_engine)
-    print(f"Monkey patch AR engine {ar_engine.__class__.__name__} _build_fsdp_module with `ignored_names`")
+    ar_engine._build_module = types.MethodType(_build_module, ar_engine)
+    print(f"Monkey patch AR engine {ar_engine.__class__.__name__} _build_module with Qwen-Image vision tower stripping")
+
+    if strategy == "fsdp2":
+        ar_engine._build_fsdp_module = types.MethodType(_build_fsdp_module, ar_engine)
+        print(f"Monkey patch AR engine {ar_engine.__class__.__name__} _build_fsdp_module with `ignored_names`")
 
 
 # verl monkey patch use
@@ -171,6 +184,14 @@ def _get_input_embeds(
 
         video_embeds = video_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+
+    if pixel_values is None and pixel_values_videos is None:  # handle mixed text-image data
+        config = model.config.vision_config
+        patch_dim = config.in_channels * config.temporal_patch_size * config.patch_size**2
+        pixel_values = torch.zeros((16, patch_dim), dtype=inputs_embeds.dtype, device=inputs_embeds.device)
+        image_grid_thw = torch.tensor([[1, 4, 4]], dtype=torch.long, device=inputs_embeds.device)
+        image_embeds, _ = unpack_visual_output(model.visual(pixel_values, grid_thw=image_grid_thw))
+        inputs_embeds = inputs_embeds + 0.0 * image_embeds.mean()
 
     if attention_mask is not None:
         attention_mask = attention_mask.to(inputs_embeds.device)

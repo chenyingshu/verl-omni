@@ -22,9 +22,9 @@ DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-8b
 
 NUM_GPUS_ACTOR_ROLLOUT_REWARD=${NUM_GPUS:-2}
 NUM_NODES=${NUM_NODES:-1}
-ACTOR_SP=1
+ACTOR_SP=$NUM_GPUS_ACTOR_ROLLOUT_REWARD
 ROLLOUT_TP=1
-REWARD_TP=1
+REWARD_TP=$NUM_GPUS_ACTOR_ROLLOUT_REWARD
 IMAGE_RESOLUTION=512
 
 ENGINE=vllm_omni
@@ -57,11 +57,11 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.ppo_mini_batch_size=2 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.actor.strategy=fsdp2 \
-    actor_rollout_ref.actor.fsdp_config.model_type=bfloat16 \
+    actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=$ACTOR_SP \
-    actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
+    +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
     actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo \
     actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
     actor_rollout_ref.rollout.ar_calculate_log_probs=True \
@@ -109,7 +109,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     '+reward.reward_functions.dit.name=compute_score_unified_reward' \
     '+reward.reward_functions.dit.weight=1.0' \
     "+trainer.train_ar=True" \
-    trainer.logger='["console", "tensorboard", "wandb"]' \
+    trainer.logger='["console", "tensorboard"]' \
     trainer.project_name=dual_grpo \
     trainer.experiment_name=qwen_image_dualgrpo \
     trainer.validation_data_dir=validation_data \

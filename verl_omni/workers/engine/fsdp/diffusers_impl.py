@@ -71,7 +71,7 @@ from verl_omni.utils.diffusion_compile import _maybe_compile_repeated_blocks
 from verl_omni.utils.fsdp_utils import apply_fsdp2, collect_lora_params
 from verl_omni.workers.config import DiffusionModelConfig
 from verl_omni.workers.engine.lora_adapter_mixin import LoRAAdapterMixin
-from verl_omni.workers.engine.utils import patch_composite_ar_engine_fsdp_build, qwen2_vl_base_forward
+from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build, qwen2_vl_base_forward
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -1583,8 +1583,7 @@ class CompositeFSDPEngine(BaseEngine):
             optimizer_config=optimizer_config,
             checkpoint_config=checkpoint_config,
         )
-        if engine_config.strategy == "fsdp2":
-            patch_composite_ar_engine_fsdp_build(self.ar_engine, model_config)
+        patch_composite_ar_engine_module_build(self.ar_engine, model_config, engine_config.strategy)
         model_config.model_type = "diffusion_model"
         self.dit_engine = PPODiffusersFSDPEngine(
             model_config=model_config,
