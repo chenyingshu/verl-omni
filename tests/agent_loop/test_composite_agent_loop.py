@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 import ray
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from verl.protocol import DataProto
 from verl.workers.rollout.llm_server import LLMServerManager
 
@@ -45,11 +45,11 @@ class _FakeRemoteComputeScore:
 
     async def remote(self, data: DataProto) -> dict:
         self.received_data = data
-        return {
-            "reward_score": 2.0,
+        return {  # fix to use weights dit:1.0, ar: 0.0 for combined score
+            "reward_score": 1.5,
             "reward_extra_info": {
-                "reward/combined": 2.0,
-                "reward/dit": 1.0,
+                "reward/combined": 1.5,
+                "reward/dit": 1.5,
                 "reward/dit/dit_msg": "dummy_dit_reward_info",
                 "reward/ar": 1.0,
                 "reward/ar/ar_msg": "dummy_ar_reward_info",
@@ -86,8 +86,7 @@ def _assert_ar_outputs(result: DataProto, *, batch_size: int, prompt_len: int, m
     assert ar_input_ids.shape == (batch_size, prompt_len + max_token_len)
     assert ar_response_ids.shape == (batch_size, max_token_len)
     if ar_all_log_probs is not None:
-        assert ar_all_log_probs.shape[1] == max_token_len
-        assert ar_all_log_probs.shape == (batch_size, ar_all_log_probs.shape[1], ar_all_log_probs.shape[-1])
+        assert ar_all_log_probs.shape == (batch_size, max_token_len)
     assert ar_attention_mask.shape == (batch_size, prompt_len + max_token_len)
     assert ar_attention_mask.dtype == torch.long
     assert ar_attention_mask.min() >= 0 and ar_attention_mask.max() <= 1
@@ -158,7 +157,7 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.step_execution = False
         # Keep the 2-GPU TP smoke light; CI EOFError on worker launch is usually OOM.
         # Keep enough inference steps for sde_window_range=[0, 5] / sde_window_size=2.
-        config.actor_rollout_ref.rollout.n = 2  # dit part
+        config.actor_rollout_ref.rollout.n = 2  # dit samples per AR row
         config.actor_rollout_ref.rollout.m = 2  # ar part
         config.actor_rollout_ref.rollout.pipeline.height = 256
         config.actor_rollout_ref.rollout.pipeline.width = 256
@@ -185,7 +184,10 @@ def init_config() -> DictConfig:
         config.actor_rollout_ref.rollout.pipeline.max_sequence_length = max_length
         config.actor_rollout_ref.rollout.nnodes = 1
 
-        config.reward.reward_manager.name = "naive"
+        config.reward.reward_manager.name = "MultiVisualRewardManager"
+        # CompositeAgentLoopWorker requires AR weight 0 so MultiVisualRewardManager
+        # does not double-count AR into the combined DiT score.
+        OmegaConf.update(config, "reward.reward_functions.ar.weight", 0.0, force_add=True)
         config.trainer.n_gpus_per_node = requested_gpus
 
         config.data.max_prompt_length = max_length
@@ -317,6 +319,30 @@ def test_single_turn(init_config, agent_reward_loop: bool):
                 "Key "
                 f"{key} not found in diffusion non-tensor batch with keys "
                 f"{list(diffusion_result.non_tensor_batch.keys())}."
+            )
+
+        if agent_reward_loop:
+            # Fake scores reward/ar=1.0 vs reward/combined=1.5. AR must use the AR
+            # extras (mean of identical 1.0s), not the combined/DiT score.
+            torch.testing.assert_close(
+                ar_result.batch["rm_scores"],
+                torch.full((ar_batch_size, 1), 1.0, dtype=torch.float32),
+            )
+            torch.testing.assert_close(
+                diffusion_result.batch["rm_scores"],
+                torch.full((diffusion_batch_size, 1), 1.5, dtype=torch.float32),
+            )
+            np.testing.assert_allclose(
+                np.asarray(ar_result.non_tensor_batch["reward/ar"], dtype=np.float64),
+                np.full(ar_batch_size, 1.0),
+            )
+            assert list(ar_result.non_tensor_batch["reward/ar/ar_msg"]) == ["dummy_ar_reward_info"] * ar_batch_size
+            assert "reward/combined" not in ar_result.non_tensor_batch
+            assert "reward/dit" not in ar_result.non_tensor_batch
+            assert "reward/ar" not in diffusion_result.non_tensor_batch
+            assert "reward/ar/ar_msg" not in diffusion_result.non_tensor_batch
+            assert list(diffusion_result.non_tensor_batch["reward/dit/dit_msg"]) == (
+                ["dummy_dit_reward_info"] * diffusion_batch_size
             )
 
         height = init_config.actor_rollout_ref.rollout.pipeline.height

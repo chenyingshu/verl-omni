@@ -92,6 +92,7 @@ from verl_omni.trainer.diffusion.rollout_correction import (
 )
 from verl_omni.trainer.diffusion.teacher_manager import DiffusionTeacherManager
 from verl_omni.trainer.diffusion.v1.tq_utils import (
+    canonicalize_diffusion_tq_meta,
     diffusion_metric_tq_fields,
     diffusion_persisted_tq_fields,
     diffusion_tq_batch_to_dataproto,
@@ -175,8 +176,8 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         if self._is_direct_preference:
             if config.algorithm.get("sample_source", "online") == "offline":
                 raise NotImplementedError(
-                    "Diffusion offline DPO stays on the v0 trainer. Use "
-                    "`python -m verl_omni.trainer.main_diffusion` with trainer.use_v1=false."
+                    "Diffusion offline DPO stays on the v0 trainer by design. Use "
+                    "`python -m verl_omni.trainer.main_diffusion` (the legacy v0 entrypoint)."
                 )
             self._loss_fn = get_diffusion_loss_fn(loss_mode)
             self._has_old_adapter = "old" in tuple(
@@ -218,6 +219,15 @@ class PolicyGradientDiffusionTrainerV1(ABC):
                 raise ValueError("max_incomplete_group_refill_rounds must be a positive integer")
 
         replay_buffer_cls = ReplayBufferAsync if self.trainer_mode == "separate_async" else ReplayBuffer
+        # ReplayBuffer.sample() discovers finished groups by sleeping a fixed
+        # poll_interval between tq.kv_list() calls. The upstream 2.0s default
+        # quantizes sync gen: sample() returns only on a poll boundary, so a
+        # rollout finishing mid-sleep idles the trainer for the remainder
+        # (observed +1.15s/step on Qwen-Image FlowGRPO). Sync mode has nothing
+        # to overlap with the wait, so poll fast unless configured otherwise.
+        poll_interval = sampler_config.get("poll_interval", None)
+        if poll_interval is None:
+            poll_interval = 2.0 if self.trainer_mode == "separate_async" else 0.05
         return replay_buffer_cls(
             trainer_mode=self.trainer_mode,
             trainer_config=self.config.trainer.v1.get(self.trainer_mode, {}),
@@ -225,6 +235,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
             max_off_policy_strategy=sampler_config.max_off_policy_strategy,
             sampler_kwargs=sampler_config.sampler_kwargs,
             refill_fn=self._add_prompts_to_generate,
+            poll_interval=float(poll_interval),
         )
 
     def init(self):
@@ -495,6 +506,11 @@ class PolicyGradientDiffusionTrainerV1(ABC):
 
         with marked_timer("adv", timing_raw, color="brown"):
             data = self._compute_advantage(data)
+
+        # Zero advantages of rows appended by _balance_batch so the unmasked
+        # FlowGRPO loss mean is not corrupted by duplicated real advantages.
+        # _compute_advantage recomputes advantages, so this must run after it.
+        data = self._zero_pad_row_advantages(data)
 
         with marked_timer("update_actor", timing_raw, color="red"):
             actor_output = self._update_actor(data)
@@ -805,6 +821,9 @@ class PolicyGradientDiffusionTrainerV1(ABC):
             sampler=create_rl_sampler(self.config.data, self.train_dataset),
         )
         self.train_dataloader_it = None
+        # Per-run monotonic generation-batch number; pairs with the batch-local
+        # ``index`` so TQ row ordering survives multi-batch sampling paths.
+        self._gen_batch_seq = 0
         val_batch_size = self.config.data.val_batch_size or len(self.val_dataset)
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
@@ -1039,6 +1058,8 @@ class PolicyGradientDiffusionTrainerV1(ABC):
 
         batch_dict["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch_dict["raw_prompt"]))], dtype=object)
         batch_dict["index"] = np.arange(len(batch_dict["raw_prompt"]))
+        batch_dict["gen_batch_seq"] = np.full(len(batch_dict["raw_prompt"]), self._gen_batch_seq)
+        self._gen_batch_seq += 1
         return tu.get_tensordict(batch_dict)
 
     def _generation_batch_size(self) -> int:
@@ -1087,11 +1108,14 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         """Use the upstream replay buffer and replace only selected failed groups."""
         sampler_config = self.config.trainer.v1.sampler
         if not sampler_config.get("drop_incomplete_groups", False):
-            return self.replay_buffer.sample(
+            batch_meta, off_policy_metrics = self.replay_buffer.sample(
                 global_steps=self.global_steps,
                 partition_id="train",
                 batch_size=batch_size,
             )
+            # Restore the v0 prompt-major row order before any consumer reads
+            # or writes these keys (TQ key order is storage-arbitrary).
+            return canonicalize_diffusion_tq_meta(batch_meta), off_policy_metrics
 
         max_refill_rounds = sampler_config.get("max_incomplete_group_refill_rounds", 3)
         remaining_batch_size = batch_size
@@ -1164,7 +1188,10 @@ class PolicyGradientDiffusionTrainerV1(ABC):
                 max_refill_rounds,
             )
 
-        return KVBatchMeta(partition_id="train", keys=keys, tags=tags), {**sampling_metrics, **failure_metrics}
+        return canonicalize_diffusion_tq_meta(KVBatchMeta(partition_id="train", keys=keys, tags=tags)), {
+            **sampling_metrics,
+            **failure_metrics,
+        }
 
     def _submit_batch_to_rollout(self, batch) -> int:
         tags = [{"is_prompt": True, "status": "pending", "global_steps": self.global_steps} for _ in range(len(batch))]
@@ -1223,7 +1250,29 @@ class PolicyGradientDiffusionTrainerV1(ABC):
 
         batch_multiple = math.lcm(dp_size, actor_global_mini_batch_size)
         if len(data) % batch_multiple != 0:
-            data, _ = pad_dataproto_to_divisor(data, size_divisor=batch_multiple)
+            # pad_dataproto_to_divisor pads by duplicating real rows, which would
+            # carry real advantages into the unmasked FlowGRPO loss mean and bias
+            # the gradient. Mark the duplicated tail so its advantages can be zeroed
+            # before the actor update (see _zero_pad_row_advantages).
+            data, pad_size = pad_dataproto_to_divisor(data, size_divisor=batch_multiple)
+            is_pad = np.zeros(len(data), dtype=bool)
+            is_pad[-pad_size:] = True
+            data.non_tensor_batch["_balance_is_pad"] = is_pad
+        return data
+
+    def _zero_pad_row_advantages(self, data: DataProto) -> DataProto:
+        """Zero advantages of rows appended by ``_balance_batch``.
+
+        ``_compute_advantage`` recomputes advantages, so this must run after it.
+        Pad rows then contribute nothing to the unmasked ``torch.mean`` loss.
+        No-op when no padding occurred.
+        """
+        is_pad = data.non_tensor_batch.pop("_balance_is_pad", None)
+        if is_pad is None or not is_pad.any():
+            return data
+        advantages = data.batch["advantages"]
+        is_pad = torch.from_numpy(is_pad).to(advantages.device)
+        advantages[is_pad] = 0.0
         return data
 
     def _compute_old_log_prob(self, data: DataProto) -> DataProto:
@@ -1356,6 +1405,8 @@ class PolicyGradientDiffusionTrainerV1(ABC):
                 [str(uuid.uuid4()) for _ in range(len(batch_dict["raw_prompt"]))], dtype=object
             )
             batch_dict["index"] = np.arange(len(batch_dict["raw_prompt"]))
+            batch_dict["gen_batch_seq"] = np.full(len(batch_dict["raw_prompt"]), self._gen_batch_seq)
+            self._gen_batch_seq += 1
             batch = tu.get_tensordict(batch_dict)
             tu.assign_non_tensor_data(batch, "global_steps", self.global_steps)
             tu.assign_non_tensor_data(batch, "validate", True)
@@ -1368,6 +1419,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
             batch_meta, _ = self.replay_buffer.sample(
                 global_steps=self.global_steps, partition_id="val", batch_size=len(batch)
             )
+            batch_meta = canonicalize_diffusion_tq_meta(batch_meta)
             data = diffusion_tq_batch_to_dataproto(batch_meta, pad_token_id=self.tokenizer.pad_token_id or 0)
 
             # Skip empty validation batches (e.g. all trajectories were dropped

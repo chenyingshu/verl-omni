@@ -17,6 +17,7 @@ import time
 
 import torch
 from verl.utils.device import get_visible_devices_keyword
+from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 from verl.workers.rollout.vllm_rollout.utils import VLLM_LORA_INT_ID, VLLM_LORA_NAME, VLLM_LORA_PATH, set_death_signal
 from vllm_omni.diffusion.worker.diffusion_worker import CustomPipelineWorkerExtension
 
@@ -25,6 +26,22 @@ from verl_omni.workers.rollout.vllm_rollout.zmq_utils import make_update_zmq_han
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+# AR engine classes needing the MoE weight-loader patch; add new MoE omni models here.
+SUPPORTED_MOE_MODELS: list[type] = []
+try:
+    from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni import Qwen3OmniMoeForConditionalGeneration
+
+    SUPPORTED_MOE_MODELS.append(Qwen3OmniMoeForConditionalGeneration)
+except ImportError:
+    pass
+
+
+def _is_moe_engine(model) -> bool:
+    """True when the (possibly ACLGraph-wrapped) engine class is whitelisted."""
+    if hasattr(model, "runnable") and "ACLGraphWrapper" in str(type(model)):
+        model = model.runnable
+    return isinstance(model, tuple(SUPPORTED_MOE_MODELS))
 
 
 def _split_visible_devices(value: str) -> list[str]:
@@ -93,6 +110,12 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
         if model is not None and model_config is not None and hasattr(model, "load_weights"):
             return model, model_config
         return None
+
+    def monkey_patch_model(self) -> None:
+        # startup MoE weight-loader patch; re-attached per sync in update_weights_from_ipc
+        standard = self._get_standard_weight_model_and_config()
+        if standard is not None and _is_moe_engine(standard[0]):
+            patch_vllm_moe_model_weight_loader(standard[0])
 
     def update_weights_from_ipc(
         self,
@@ -192,17 +215,10 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
             logger.info("Loading standard weights (async)")
             standard = self._get_standard_weight_model_and_config()
             if standard is not None:
-                # AR (standard vLLM) model: load each bucket via the low-level
-                # model.load_weights (no per-bucket finalize), then run the single
-                # post-load processing pass once all buckets are received.
                 model, model_config = standard
-                # Re-attach weight_loader on Ascend FusedMoE params via verl's
-                # built-in patch (handles ACLGraph unwrap + SUPPORTED_MOE_MODELS
-                # whitelist, which Qwen3-Omni is registered into via
-                # patch_register_vllm_moe_model_weight_loader).
-                from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
-
-                patch_vllm_moe_model_weight_loader(model)
+                # re-attach the MoE weight loader
+                if _is_moe_engine(model):
+                    patch_vllm_moe_model_weight_loader(model)
 
                 # On Ascend, process_weights_after_loading transposes w13/w2 for
                 # fused-MoE compute; revert it so load_weights sees checkpoint-shape
@@ -212,14 +228,44 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
                     restore_moe_param_layout,
                 )
 
-                if _is_npu_platform():
-                    restore_moe_param_layout(model, model_config.hf_text_config.hidden_size)
-                receiver.receive_weights(
-                    on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(weights)
-                )
-                from vllm.model_executor.model_loader.utils import process_weights_after_loading
+                is_npu = _is_npu_platform()
+                # Use checkpoint-layout restoration for packed MoE weights.
+                # Dense omni loaders may copy auxiliary encoder buffers and
+                # derive runtime tensors inside load_weights; turning those
+                # tensors into meta placeholders breaks their loading contract.
+                has_moe = False
+                if not is_npu:
+                    from vllm.model_executor.layers.fused_moe.routed_experts import RoutedExperts
 
-                process_weights_after_loading(model, model_config, self.device)
+                    has_moe = any(isinstance(layer, RoutedExperts) for layer in model.modules())
+                if is_npu or not has_moe:
+                    if is_npu:
+                        restore_moe_param_layout(model, model_config.hf_text_config.hidden_size)
+                    receiver.receive_weights(
+                        on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(weights)
+                    )
+                    from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+                    process_weights_after_loading(model, model_config, self.device)
+                else:
+                    # vLLM records checkpoint layouts when constructing the
+                    # model. Restore those layouts before loading, then copy
+                    # processed weights back into the original kernel storage.
+                    from vllm.model_executor.model_loader.reload import (
+                        finalize_layerwise_reload,
+                        initialize_layerwise_reload,
+                    )
+
+                    initialize_layerwise_reload(model)
+                    # Layerwise loaders can retain tensors across buckets. The
+                    # receiver reuses its IPC buffer, so retained weights must
+                    # own their storage until the layer is ready to process.
+                    receiver.receive_weights(
+                        on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(
+                            [(name, tensor.clone()) for name, tensor in weights]
+                        )
+                    )
+                    finalize_layerwise_reload(model, model_config)
             else:
                 # Diffusion pipeline worker: load via the pipeline. vllm-omni
                 # 0.26 removed DiffusionWorker/DiffusionModelRunner.load_weights;

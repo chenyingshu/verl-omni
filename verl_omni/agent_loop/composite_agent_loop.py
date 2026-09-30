@@ -36,8 +36,6 @@ from verl.base_config import BaseConfig
 from verl.experimental.agent_loop.agent_loop import (
     AgentLoopManager,
     AgentLoopMetrics,
-    DictConfigWrap,
-    _agent_loop_registry,
     auto_await,
 )
 from verl.protocol import DataProto
@@ -68,9 +66,9 @@ class ARAgentLoopOutput(BaseModel):
     prompt_ids: list[int]
     """Input ids of raw input prompt"""
     response_ids: list[int]
-    """Full response AR tokens output (torch.Tensor)."""
+    """AR response token ids."""
     response_mask: list[int]
-    """Attention mask for padded response tokens (torch.Tensor)."""
+    """1 for generated AR tokens, 0 after EOS."""
     refined_prompt: Any
     """Refined rewritten prompt in chat-message form for diffusion."""
     ar_response_logprobs: Optional[Any] = None
@@ -132,6 +130,11 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
     ):
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 
+        if self.reward_loop_worker_handles is not None:
+            # Assert set ar.weight to 0
+            ar_weight = self.config.reward.get("reward_functions", {}).get("ar", {}).get("weight", 1.0)
+            assert ar_weight == 0, "AR weight must be 0 for AR reward"
+
     async def generate_sequences(self, batch: DataProto) -> tuple[DataProto, DataProto]:
         """Generate sequences from agent loop.
 
@@ -173,7 +176,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
 
         is_validate = batch.meta_info.get("validate", False)
         per_rollout_seeds: Optional[list[int]] = None
-        diffusion_n = config.n
+        ar_seeds: Optional[list[int]] = None
+        diffusion_n = config.val_kwargs.n if is_validate else config.n
 
         if is_validate:
             sampling_params.update(_config_to_sampling_dict(config.val_kwargs.pipeline))
@@ -189,9 +193,16 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             sampling_params["ar_logprobs"] = False
         else:
             sampling_params["global_steps"] = batch.meta_info["global_steps"]
-            # Prefer trainer-assigned global indices so chunked workers derive the
-            # same per-row seed regardless of local batch position / pack order.
-            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, None)
+            # Trainer sets one global id per AR row. Expand to diffusion_n DiT rows so
+            # chunked workers keep disjoint seeds (local 0-based range would collide).
+            global_indices = batch.non_tensor_batch.get("_rollout_seed_global_idx")
+            ar_global_indices = None
+            dit_global_indices = None
+            if global_indices is not None:
+                ar_global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
+                dit_global_indices = np.repeat(ar_global_indices, diffusion_n)
+            per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, dit_global_indices)
+            ar_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch), ar_global_indices)
 
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop
@@ -207,6 +218,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             else:
                 kwargs["per_rollout_seeds"] = None
             task_sampling_params = sampling_params.copy()
+            if ar_seeds is not None:
+                task_sampling_params["seed"] = ar_seeds[i]
             tasks.append(
                 asyncio.create_task(self._run_agent_loop(task_sampling_params, validate=is_validate, **kwargs))
             )
@@ -228,34 +241,6 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         diffusion_output = super()._postprocess(diffusion_inputs, input_non_tensor_batch=diffusion_non_tensor_batch)
 
         return ar_output, diffusion_output
-
-    async def _run_agent_loop(
-        self,
-        sampling_params: dict[str, Any],
-        *,
-        agent_name: str,
-        validate: bool = False,
-        **kwargs,
-    ) -> tuple[_InternalARAgentLoopOutput, list[_InternalDiffusionAgentLoopOutput]]:
-        assert agent_name in _agent_loop_registry, (
-            f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
-        )
-
-        agent_loop_config = _agent_loop_registry[agent_name]
-        agent_loop = hydra.utils.instantiate(
-            config=agent_loop_config,
-            trainer_config=DictConfigWrap(config=self.config),
-            server_manager=self.server_manager,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
-            dataset_cls=self.dataset_cls,
-            data_config=DictConfigWrap(self.config.data),
-            extra_tokenizer_map=self.model_config.extra_tokenizer_map,
-        )
-        output: tuple[ARAgentLoopOutput, list[DiffusionAgentLoopOutput]] = await agent_loop.run(
-            sampling_params, **kwargs
-        )
-        return await self._agent_loop_postprocess(output, validate=validate, **kwargs)
 
     # copy from verl.experimental.agent_loop.agent_loop.AgentLoopWorker
     def _pad_token_ids(
@@ -334,21 +319,23 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             return_attention_mask=True,
         )
 
+        response_length = self.rollout_config.ar.response_length
         response_output = self._pad_token_ids(
             output.response_ids,
-            max_length=self.rollout_config.ar.response_length,
+            max_length=response_length,
             padding_side="right",
             return_attention_mask=True,
         )
 
-        response_mask_output = self._pad_token_ids(
-            output.response_mask,
-            max_length=self.rollout_config.ar.response_length,
-            padding_side="right",
-            return_attention_mask=False,
-        )
-
-        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+        # Zero-pad the 0/1 mask. tokenizer.pad would write pad_token_id into the tail.
+        if len(output.response_mask) > response_length:
+            raise ValueError(
+                f"AR response_mask length {len(output.response_mask)} exceeds ar.response_length={response_length}."
+            )
+        response_mask = torch.zeros((1, response_length), dtype=torch.long)
+        if output.response_mask:
+            response_mask[0, : len(output.response_mask)] = torch.tensor(output.response_mask, dtype=torch.long)
+        response_mask = response_mask * response_output["attention_mask"]
 
         # token ids and attention mask forprompt + response
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
@@ -368,7 +355,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             if isinstance(ar_response_logprobs, list):
                 pad_size = self.rollout_config.ar.response_length - len(output.ar_response_logprobs)
                 ar_response_logprobs = torch.tensor(ar_response_logprobs + [0.0] * pad_size).unsqueeze(0)
-            if ar_response_logprobs.dim() == 2:
+            elif ar_response_logprobs.dim() == 1:
+                # Unbatch of (B, response_length) leaves one row.
                 ar_response_logprobs = ar_response_logprobs.unsqueeze(0)
 
         prompt_ids = prompt_output["input_ids"]  # padded prompt ids
@@ -525,6 +513,11 @@ class CompositeAgentLoopManager(AgentLoopManager):
     @SkipManager.annotate(role="rollout")
     async def generate_sequences(self, prompts: DataProto) -> tuple[DataProto, DataProto]:
         """Gather ``(ar_batch, diffusion_batch)`` tuples from composite workers."""
+
+        # Attach per-sample priority before chunking so workers get disjoint ranges
+        # without per-worker offsets (same as verl AgentLoopManager.generate_sequences).
+        if "priority" not in prompts.non_tensor_batch:
+            prompts.non_tensor_batch["priority"] = np.arange(len(prompts), dtype=np.int64)
 
         chunks = prompts.chunk(len(self.agent_loop_workers))
         outputs = await asyncio.gather(

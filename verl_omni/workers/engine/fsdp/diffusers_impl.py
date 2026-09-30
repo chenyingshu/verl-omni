@@ -1772,18 +1772,18 @@ class CompositeFSDPEngine(BaseEngine):
 
         return merged
 
-    @property
-    def has_lora(self) -> bool:
-        """Return True if either AR or DiT sub-engine carries a default LoRA adapter."""
-        for sub_engine in (self.ar_engine, self.dit_engine):
-            module = getattr(sub_engine, "module", None)
-            peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
-            if peft_model is not None and getattr(peft_model, "peft_config", None):
-                if peft_model.peft_config.get("default") is not None:
-                    return True
-        return False
+    # @property
+    # def has_lora(self) -> bool:
+    #     """Return True if either AR or DiT sub-engine carries a default LoRA adapter."""
+    #     for sub_engine in (self.ar_engine, self.dit_engine):
+    #         module = getattr(sub_engine, "module", None)
+    #         peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
+    #         if peft_model is not None and getattr(peft_model, "peft_config", None):
+    #             if peft_model.peft_config.get("default") is not None:
+    #                 return True
+    #     return False
 
-    def get_lora_peft_config(self) -> dict[str, Any] | None:
+    def get_lora_peft_config(self, adapter_name: str = "default") -> dict[str, Any] | None:
         """PEFT metadata for colocated diffusion rollout LoRA apply."""
         dit_module = getattr(self.dit_engine, "module", None)
         dit_peft_model = getattr(dit_module, "_fsdp_wrapped_module", dit_module) if dit_module is not None else None
