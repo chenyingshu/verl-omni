@@ -1556,6 +1556,7 @@ class CompositeFSDPEngine(BaseEngine):
             target_parameters=diffusion_model_config.target_parameters,
             exclude_modules=diffusion_model_config.exclude_modules,
             lora_adapter_path=getattr(diffusion_model_config, "lora_adapter_path", None),
+            lora=getattr(diffusion_model_config, "lora", {}),  # currently only support "merge: True"
             load_tokenizer=False,
             override_config=diffusion_model_config.ar.override_config,
         )
@@ -1595,6 +1596,10 @@ class CompositeFSDPEngine(BaseEngine):
         # default: first stage
         self.ar_stage = True
         self.current_engine = self.ar_engine
+        # train_mini_batch nests one train_mode around every mini-batch. Depth
+        # lets the stage advance once per actor update instead of once per mini-batch.
+        self._mode_depth = 0
+        self._stage_switch_pending = False
 
     def initialize(self) -> None:
         self.ar_engine.initialize()
@@ -1645,8 +1650,15 @@ class CompositeFSDPEngine(BaseEngine):
         return self.current_engine.forward_backward_batch(data, loss_function, forward_only=forward_only)
 
     def train_batch(self, data: TensorDict, loss_function: Callable) -> Any:
+        # ``TrainingWorker.train_mini_batch`` calls this once per mini-batch while an
+        # outer train_mode is still active.
+        # Advance the stage when that outermost context exits.
+        # A bare train_batch (no surrounding train mode) still switches immediately.
         outputs = super().train_batch(data, loss_function)
-        self.next_stage()
+        if self._mode_depth == 0:
+            self.next_stage()
+        else:
+            self._stage_switch_pending = True
         return outputs
 
     def infer_batch(self, data: TensorDict, loss_function: Optional[Callable] = None) -> Any:
@@ -1830,7 +1842,7 @@ class CompositeFSDPEngine(BaseEngine):
 
 
 class _CompositeEngineCtx:
-    """Enter/exit train/eval mode on both AR and DiT sub-engines."""
+    """Enter/exit train/eval mode on the current AR or DiT sub-engine."""
 
     def __init__(self, engine: CompositeFSDPEngine, mode: str, **kwargs):
         self.engine = engine
@@ -1839,21 +1851,31 @@ class _CompositeEngineCtx:
         self._subcontexts: list = []
 
     def __enter__(self):
-        self.engine.mode = self.mode
-        if self.mode == "train":
-            self._subcontexts = [
-                self.engine.current_engine.train_mode(**self.kwargs),
-            ]
-        else:
-            self._subcontexts = [
-                self.engine.current_engine.eval_mode(**self.kwargs),
-            ]
-        for ctx in self._subcontexts:
-            ctx.__enter__()
-        return self
+        self.engine._mode_depth = getattr(self.engine, "_mode_depth", 0) + 1
+        try:
+            self.engine.mode = self.mode
+            if self.mode == "train":
+                self._subcontexts = [
+                    self.engine.current_engine.train_mode(**self.kwargs),
+                ]
+            else:
+                self._subcontexts = [
+                    self.engine.current_engine.eval_mode(**self.kwargs),
+                ]
+            for ctx in self._subcontexts:
+                ctx.__enter__()
+            return self
+        except Exception:
+            self.engine._mode_depth -= 1
+            raise
 
     def __exit__(self, exc_type, exc_value, traceback):
         for ctx in reversed(self._subcontexts):
             ctx.__exit__(exc_type, exc_value, traceback)
         self._subcontexts = []
         self.engine.mode = None
+        self.engine._mode_depth = getattr(self.engine, "_mode_depth", 1) - 1
+        if self.engine._mode_depth == 0 and getattr(self.engine, "_stage_switch_pending", False):
+            self.engine._stage_switch_pending = False
+            if exc_type is None:
+                self.engine.next_stage()

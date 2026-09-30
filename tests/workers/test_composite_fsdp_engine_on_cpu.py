@@ -56,6 +56,8 @@ def _make_composite_engine() -> CompositeFSDPEngine:
     engine.ar_stage = True
     engine.current_engine = engine.ar_engine
     engine.mode = None
+    engine._mode_depth = 0
+    engine._stage_switch_pending = False
     return engine
 
 
@@ -110,6 +112,7 @@ class TestBuildARHfModelConfig:
         object.__setattr__(dm_cfg, "lora_rank", 8)
         object.__setattr__(dm_cfg, "lora_alpha", 16)
         object.__setattr__(dm_cfg, "exclude_modules", ".*visual.*")
+        object.__setattr__(dm_cfg, "lora", {"merge": True})
         local_te_dir = os.path.join(self.tmp_dir, "text_encoder")
         self.config.save_pretrained(local_te_dir)
         hf_cfg = engine.build_ar_hf_model_config(dm_cfg)
@@ -120,6 +123,7 @@ class TestBuildARHfModelConfig:
         assert hf_cfg.lora_rank == 8
         assert hf_cfg.lora_alpha == 16
         assert hf_cfg.exclude_modules == ".*visual.*"
+        assert hf_cfg.lora.get("merge") is True
 
     def test_respects_custom_text_encoder_subfolder(self):
         engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
@@ -249,6 +253,25 @@ class TestTrainBatchStageSwitching:
             assert dit_out["metrics"]["dit"] == pytest.approx(2.0)
             mock_train.assert_called_once_with(dit_data, loss_fn)
             assert engine.current_engine is engine.ar_engine
+
+    def test_nested_train_mode_keeps_ar_engine_for_every_mini_batch(self):
+        """train_mini_batch holds one outer train_mode across every mini-batch."""
+        engine = _make_composite_engine()
+        ar_batch_size, _ = _dual_grpo_batch_sizes(device_count=1)
+        ar_data = create_ar_train_batch(ar_batch_size, micro_batch_size_per_gpu=2)
+        loss_fn = MagicMock()
+
+        with _patch_base_engine_method("train_batch") as mock_train:
+            mock_train.return_value = {"metrics": {"ar": 1.0}}
+            with engine.train_mode():
+                engine.train_batch(ar_data, loss_fn)
+                assert engine.current_engine is engine.ar_engine
+                engine.train_batch(ar_data, loss_fn)
+                assert engine.current_engine is engine.ar_engine
+            assert mock_train.call_count == 2
+
+        assert engine.current_engine is engine.dit_engine
+        assert engine.ar_stage is False
 
 
 class TestCompositeEngineDelegation:
