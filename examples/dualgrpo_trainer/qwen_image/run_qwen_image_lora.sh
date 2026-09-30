@@ -18,7 +18,7 @@ data_test_path=$WORKSPACE/data/r2i_bench/qwen_image/test.parquet
 
 # model_name=$WORKSPACE/models/Qwen/Qwen-Image
 model_name=$WORKSPACE/models/tiny-random/Qwen-Image
-DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-8b
+DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-4b
 
 NUM_GPUS_ACTOR_ROLLOUT_REWARD=${NUM_GPUS:-2}
 NUM_NODES=${NUM_NODES:-1}
