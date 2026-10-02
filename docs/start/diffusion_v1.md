@@ -1,6 +1,6 @@
 # Diffusion V1 training
 
-Last updated: 09/24/2026
+Last updated: 09/28/2026
 
 This guide runs the diffusion V1 trainer in synchronous or separate-asynchronous
 mode using the provided Stable Diffusion 3.5 Medium FlowGRPO OCR recipes.
@@ -158,6 +158,51 @@ bash examples/flowgrpo_trainer/sd35/run_sd35_medium_ocr_lora_v1_separate_async.s
 `sync_compatible=true` pauses standalone generation during actor updates. It
 requires `num_warmup_batches=0`; set it to `false` to retain rollout/training
 overlap.
+
+### Weight-sync backends
+
+Separate-async mode requires a non-naive
+`actor_rollout_ref.rollout.checkpoint_engine.backend` for the trainer ->
+standalone rollout weight sync. `nccl` (the default in the recipes above)
+broadcasts the full model every sync. `omni_delta_sharded` instead broadcasts
+only the weights that changed since the last sync: the first (seed) sync
+streams the full export, steady syncs ship sparse (position, value) updates,
+and the rollout verifies a per-flush checksum and applies them in place. RL
+updates are highly sparse in BF16, so steady-state payloads shrink to the
+per-step changed ratio while the rollout weights stay bit-identical to a full
+broadcast.
+
+The backend is a verl-omni subclass of verl's `DeltaShardedCheckpointEngine`
+(verl gates the raw `delta_sharded` name to sglang rollouts, so
+`omni_delta_sharded` resolves through verl's `CheckpointEngineRegistry`). The
+subclass re-declares the wire as the stock `named_tensors` bucketed stream and
+flattens each flush's sentinel tensors into it, so verl's unmodified
+`CheckpointEngineWorker` and vLLM `ServerAdapter` drive the whole sync; the
+vllm-omni worker extension routes the stream by sniffing the first bucket and
+applies flushes in place through verl's delta loader.
+
+`omni_delta_sharded` is gated: it requires `separate_async` mode and full-weight
+training (LoRA configs raise at startup, since adapter sync is already small),
+QAT exports are refused, and fused-MoE rollout models raise at the first sync
+(the sparse in-place apply does not reproduce their checkpoint-layout reload).
+The SD3.5-Medium full-weight recipe is:
+
+```bash
+bash examples/flowgrpo_trainer/sd35/run_sd35_medium_ocr_v1_separate_async_delta.sh
+```
+
+This backend is covered by CPU unit tests only so far; the sparsity preflight
+and a bit-exact GPU smoke against the `nccl` backend are pending (RFC #38).
+The same recipe doubles as the A/B harness: `CKPT_BACKEND=nccl` runs the
+identical full-weight configuration over a full broadcast.
+
+```bash
+CKPT_BACKEND=nccl bash examples/flowgrpo_trainer/sd35/run_sd35_medium_ocr_v1_separate_async_delta.sh
+```
+
+Watch `checkpoint_engine/changed_ratio` and `checkpoint_engine/payload_mbytes`
+in the trainer metrics to confirm the sparsity premise holds for a given model
+and optimizer before relying on the speedup.
 
 ### Model-agnostic LoRA policy snapshots
 

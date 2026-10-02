@@ -186,9 +186,7 @@ def compute_advantage(
         adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
 
     adv_estimator_fn = get_diffusion_adv_estimator_fn(adv_estimator)
-    if adv_estimator in {
-        DiffusionAdvantageEstimator.FLOW_GRPO,
-    }:
+    if adv_estimator == DiffusionAdvantageEstimator.FLOW_GRPO:
         adv_kwargs["norm_adv_by_std_in_grpo"] = norm_adv_by_std_in_grpo
         adv_kwargs["global_std"] = global_std
     advantages, returns = adv_estimator_fn(**adv_kwargs)
@@ -1169,7 +1167,6 @@ class BaseRayDiffusionTrainer(ABC):
             rm_resource_pool=resource_pool,
             accelerator_resource_pool=actor_rollout_resource_pool,
         )
-        # TODO: (susan) set dual reward worker handles for ar
 
         # create async rollout manager and request scheduler
         # Note: mode is always "async" since sync mode is deprecated
@@ -1351,6 +1348,7 @@ class BaseRayDiffusionTrainer(ABC):
             width=self.config.actor_rollout_ref.model.pipeline.width,
             vae_scale_factor=self.config.actor_rollout_ref.model.get("vae_scale_factor", 8),
         )
+
         actor_output = self.actor_rollout_wg.update_actor(batch_td)
         actor_output = tu.get(actor_output, "metrics")
         actor_output = rename_dict(actor_output, "actor/")
@@ -1681,8 +1679,6 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
-                rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
-                bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
@@ -1739,6 +1735,8 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
 
                     # Bypass mode: skip old_log_prob recompute (2 policies).
                     # Decoupled mode: recompute old_log_probs as proximal anchor (3 policies).
+                    rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
+                    bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         if self.train_ar_n_diffusion:
                             ar_batch.batch["ar_old_log_probs"] = ar_batch.batch["rollout_ar_log_probs"]
@@ -1757,6 +1755,8 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                                 metrics.update({"perf/mfu/actor_infer": old_log_prob_mfu})
                             batch = batch.union(old_log_prob)
 
+                    if self.train_ar_n_diffusion:
+                        assert "ar_old_log_probs" in ar_batch.batch, f'"ar_old_log_probs" not in {ar_batch.batch.keys()=}'
                     assert "old_log_probs" in batch.batch, f'"old_log_probs" not in {batch.batch.keys()=}'
 
                     metrics.update(

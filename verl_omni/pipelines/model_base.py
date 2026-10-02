@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
@@ -422,6 +423,60 @@ class DiffusionI2IModelBase(DiffusionModelBase):
         return model_inputs, negative_model_inputs
 
 
+def _with_rollout_sp_context(method: Callable) -> Callable:
+    @functools.wraps(method)
+    def wrapped(*args, **kwargs):
+        from vllm_omni.diffusion.forward_context import get_forward_context
+
+        ctx = get_forward_context()
+        previous = ctx.sp_plan_hooks_applied
+        ctx.sp_plan_hooks_applied = True
+        try:
+            return method(*args, **kwargs)
+        finally:
+            ctx.sp_plan_hooks_applied = previous
+
+    return wrapped
+
+
+def apply_rollout_parallel_setup(pipeline: Any, od_config: Any) -> None:
+    """Apply the VAE and DiT sequence-parallel setup that custom pipeline loading skips."""
+    # TODO: drop once the custom_pipeline loader runs initialize_model's setup, including VAE slicing.
+    from vllm_omni.diffusion.distributed.autoencoders.distributed_vae_executor import DistributedVaeMixin
+    from vllm_omni.diffusion.distributed.sp_plan import SequenceParallelConfig, get_sp_plan_from_model
+    from vllm_omni.diffusion.hooks.sequence_parallel import apply_sequence_parallel
+
+    parallel_config = od_config.parallel_config
+    vae = getattr(pipeline, "vae", None)
+    if parallel_config.vae_patch_parallel_size > 1:
+        if not isinstance(vae, DistributedVaeMixin):
+            raise ValueError(f"{type(pipeline).__name__} does not support vae_patch_parallel_size > 1.")
+        od_config.vae_use_tiling = True
+        vae.set_parallel_size(parallel_config.vae_patch_parallel_size, mode=parallel_config.vae_parallel_mode)
+    if od_config.vae_use_tiling and hasattr(vae, "use_tiling"):
+        vae.use_tiling = True  # Only honor an explicit request; keep each VAE's constructor default otherwise.
+
+    if parallel_config.sequence_parallel_size <= 1:
+        return
+    dits = {name: getattr(pipeline, name, None) for name in getattr(pipeline, "_dit_modules", ())}
+    dits = {name: dit for name, dit in dits.items() if dit is not None}
+    if not dits or any(not get_sp_plan_from_model(dit) for dit in dits.values()):
+        raise ValueError(f"{type(pipeline).__name__} does not support rollout sequence parallelism.")
+    sp_config = SequenceParallelConfig(
+        ulysses_degree=parallel_config.ulysses_degree,
+        ring_degree=parallel_config.ring_degree,
+        allgather_degree=parallel_config.allgather_degree,
+    )
+    for dit in dits.values():
+        apply_sequence_parallel(dit, sp_config, get_sp_plan_from_model(dit))
+
+    # Inference creates fresh contexts after load_model's context has exited.
+    for name in ("forward", "denoise_step", "post_decode"):
+        method = getattr(pipeline, name, None)
+        if method is not None:
+            setattr(pipeline, name, _with_rollout_sp_context(method))
+
+
 class VllmOmniPipelineBase:
     """Registry base for vllm-omni custom diffusion pipeline classes.
 
@@ -448,6 +503,21 @@ class VllmOmniPipelineBase:
             if "supports_request_batch" not in subclass.__dict__:
                 subclass.supports_request_batch = False
             cls._registry[(architecture, algorithm)] = subclass
+            if subclass.__dict__.get("_rollout_parallel_init_wrapped", False):
+                return subclass
+            init = subclass.__init__
+
+            @functools.wraps(init)
+            def __init__(self, *args, **kwargs):
+                od_config = kwargs.get("od_config")
+                if od_config is None:
+                    raise TypeError("Registered rollout pipelines require od_config as a keyword argument.")
+                init(self, *args, **kwargs)
+                if type(self) is subclass:  # registered subclasses of registered classes apply it once
+                    apply_rollout_parallel_setup(self, od_config)
+
+            subclass.__init__ = __init__
+            subclass._rollout_parallel_init_wrapped = True
             return subclass
 
         return decorator
