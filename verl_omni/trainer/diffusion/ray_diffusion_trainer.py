@@ -1739,7 +1739,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         if self.train_ar_n_diffusion:
-                            ar_batch.batch["ar_old_log_probs"] = ar_batch.batch["rollout_ar_log_probs"]
+                            ar_batch.batch["old_log_probs"] = ar_batch.batch["rollout_ar_log_probs"]
                         apply_bypass_mode_to_diffusion_batch(batch)
                     else:  # Recompute old_log_probs
                         with marked_timer("old_log_prob", timing_raw, color="blue"):
@@ -1756,7 +1756,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                             batch = batch.union(old_log_prob)
 
                     if self.train_ar_n_diffusion:
-                        assert "ar_old_log_probs" in ar_batch.batch, f'"ar_old_log_probs" not in {ar_batch.batch.keys()=}'
+                        assert "old_log_probs" in ar_batch.batch, f'"old_log_probs" not in {ar_batch.batch.keys()=}'
                     assert "old_log_probs" in batch.batch, f'"old_log_probs" not in {batch.batch.keys()=}'
 
                     metrics.update(
@@ -1814,6 +1814,9 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                         if self.train_ar_n_diffusion:
                             # AR has different group size
                             ar_batch.batch["sample_level_scores"] = ar_reward_tensor
+                            ar_batch.batch["sample_level_rewards"] = ar_batch.batch["sample_level_scores"].expand(
+                                -1, ar_batch.batch["old_log_probs"].shape[1]
+                            )  # token-level rewards
                             if ar_reward_extra_infos_dict:
                                 ar_batch.non_tensor_batch.update(
                                     {k: np.array(v) for k, v in ar_reward_extra_infos_dict.items()}

@@ -554,4 +554,3 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             num_outputs_per_prompt=num_images_per_prompt,
         )
         return outputs if return_batch else outputs[0]
-

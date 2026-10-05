@@ -82,7 +82,7 @@ def create_composite_training_config(
     model_overrides = [
         "path=" + path,
         "tokenizer_path=" + tokenizer_path,
-        "algorithm=" + ("dual_grpo" if strategy == "fsdp2" else "dual_grpo_fsdp"),
+        "algorithm=dual_grpo",
         "lora_rank=8",
         "lora_alpha=16",
         "exclude_modules=.*visual.*",

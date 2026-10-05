@@ -16,9 +16,9 @@ WORKSPACE=${WORKSPACE:-$HOME}
 data_train_path=$WORKSPACE/data/r2i_bench/qwen_image/train.parquet
 data_test_path=$WORKSPACE/data/r2i_bench/qwen_image/test.parquet
 
-# model_name=$WORKSPACE/models/Qwen/Qwen-Image
-model_name=$WORKSPACE/models/tiny-random/Qwen-Image
-DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-4b
+model_name=$WORKSPACE/models/Qwen/Qwen-Image
+# model_name=$WORKSPACE/models/tiny-random/Qwen-Image
+DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-8b
 
 NUM_GPUS_ACTOR_ROLLOUT_REWARD=${NUM_GPUS:-2}
 NUM_NODES=${NUM_NODES:-1}
@@ -96,7 +96,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     reward.reward_model.model_path=$DIT_REWARD_MODEL_NAME \
     reward.reward_model.rollout.name=$REWARD_ENGINE \
     reward.reward_model.rollout.tensor_model_parallel_size=$REWARD_TP \
-    reward.reward_model.rollout.gpu_memory_utilization=0.5 \
+    reward.reward_model.rollout.gpu_memory_utilization=0.2 \
     reward.custom_reward_function.path=pkg://verl_omni.reward_loop.reward_manager.multi \
     reward.custom_reward_function.name=_multi_reward_placeholder \
     reward.reward_manager.name=MultiVisualRewardManager \

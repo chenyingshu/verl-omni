@@ -20,7 +20,7 @@ Inherits model-specific forward/sampling behavior from FlowGRPO.
 from verl_omni.pipelines.model_base import DiffusionModelBase
 from verl_omni.pipelines.qwen_image_flow_grpo.diffusers_training_adapter import QwenImage
 
-__all__ = ["QwenImageDualGRPO", "QwenImageDualGRPOFSDP"]
+__all__ = ["QwenImageDualGRPO"]
 
 
 @DiffusionModelBase.register("QwenImagePipeline", algorithm="dual_grpo")
@@ -33,8 +33,3 @@ class QwenImageDualGRPO(QwenImage):
     Do not list ``visual`` in ``get_fsdp_ignored_module_names``: ignored params
     must be frozen, and leaving a trainable tower trips FSDP2's fail-closed check.
     """
-
-
-@DiffusionModelBase.register("QwenImagePipeline", algorithm="dual_grpo_fsdp")
-class QwenImageDualGRPOFSDP(QwenImage):
-    """Training adapter for Qwen-Image with the DualGRPO algorithm."""

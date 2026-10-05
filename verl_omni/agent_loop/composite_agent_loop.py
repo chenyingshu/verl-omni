@@ -25,7 +25,6 @@ AR (LLM/MLLM) + DiT composite architecture, as well as for agentic RL.
 import asyncio
 from typing import Any, Optional
 
-import hydra
 import numpy as np
 import ray
 import torch

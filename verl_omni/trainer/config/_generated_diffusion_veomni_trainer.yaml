@@ -128,6 +128,10 @@ actor_rollout_ref:
       save_lora_only: false
       load_contents: ${.save_contents}
       async_save: false
+    ar:
+      _target_: verl_omni.workers.config.diffusion.actor.DiffusionActorARConfig
+      calculate_entropy: false
+      entropy_coeff: 0.0
   ref:
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: veomni

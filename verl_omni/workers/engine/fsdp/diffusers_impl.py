@@ -1808,6 +1808,7 @@ class CompositeFSDPEngine(BaseEngine):
             )
         torch.distributed.barrier()
 
+    # TODO: (susan) to be tested after vllm-omni support text_encoder lora update
     def _merge_composite_peft_configs(
         self,
         dit_peft: dict[str, Any] | None,
@@ -1833,8 +1834,8 @@ class CompositeFSDPEngine(BaseEngine):
         for export in (dit_peft, ar_peft):
             if export is None:
                 continue
-            if isinstance(export, dict):
-                export = export.to_dict() # LoRAConfig
+            if not isinstance(export, dict):
+                export = export.to_dict()  # LoRAConfig
             for key, value in export.items():
                 if key not in merged:
                     merged[key] = value
@@ -1843,11 +1844,13 @@ class CompositeFSDPEngine(BaseEngine):
                         merged[key].update(value)
                     elif isinstance(merged[key], list) and isinstance(value, list):
                         merged[key].extend(value)
+                    elif key == "target_modules":
+                        merged[key] = sorted(set(merged[key]) | set(value))
                     else:
                         if merged[key] != value:
                             print(
-                                f"AR and DiT PEFT config {key} cannot be merged:\n {merged[key]}\n and \n {value}"
-                                "\nSkipping merge, keep first config."
+                                f"AR and DiT PEFT config {key} cannot be merged: {merged[key]} and {value}."
+                                "Skipping merge, keep first config."
                             )
 
         return merged
@@ -1877,9 +1880,7 @@ class CompositeFSDPEngine(BaseEngine):
         ar_peft_config = ar_peft_model.peft_config.get("default", None)
 
         peft_config = self._merge_composite_peft_configs(dit_peft_config, ar_peft_config, self.model_config)
-        result = peft_config.to_dict() if peft_config is not None else None
-
-        return result
+        return peft_config
 
     def get_per_tensor_param(
         self, layered_summon=False, base_sync_done=False, adapter_name: str | None = None, **kwargs
@@ -1896,13 +1897,18 @@ class CompositeFSDPEngine(BaseEngine):
             adapter_name=adapter_name,
             **kwargs,
         )
+        # currently only support lora.merge=True
+        merge_lora = self.model_config.lora.get("merge", False)
 
         def merged() -> Iterator[tuple[str, torch.Tensor]]:
             yield from dit_params
             for name, tensor in ar_params:
                 yield f"text_encoder.{name}", tensor
 
-        return merged(), self._merge_composite_peft_configs(dit_peft, ar_peft, self.model_config)
+        merged_peft_config = (
+            None if merge_lora else self._merge_composite_peft_configs(dit_peft, ar_peft, self.model_config)
+        )
+        return merged(), merged_peft_config
 
     def disable_adapter(self):
         ar_ctx = self.ar_engine.disable_adapter()

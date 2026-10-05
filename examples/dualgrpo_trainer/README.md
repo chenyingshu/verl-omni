@@ -105,17 +105,26 @@ Each script runs `python3 -m verl_omni.trainer.main_diffusion` with:
 - `algorithm.adv_estimator=flow_grpo`: both AR and DiT use a GRPO-style advantage estimator
 - `actor_rollout_ref.model.model_type=diffusion_composite_model`
 - `actor_rollout_ref.model.algorithm=dual_grpo`: two-stage AR + DiT rollout pipeline
+- `actor_rollout_ref.model.use_remove_padding=True`: AR sp must apply
 - `actor_rollout_ref.actor.strategy=fsdp2` with parameter and optimizer offload
 - `actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo`: DiT uses a FlowGRPO loss; AR uses a GRPO-style token loss
+- `+actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False`: required for AR part
 - `actor_rollout_ref.rollout.name=vllm_omni`: rollout engine
 - `actor_rollout_ref.rollout.agent.default_agent_loop=composite_single_turn_agent`: two-stage rollout
 - `actor_rollout_ref.rollout.m=2` and `actor_rollout_ref.rollout.n=4`: number of AR traces and DiT samples per trace
 - `reward.reward_manager.name=MultiVisualRewardManager`: compute AR and DiT rewards
-- `trainer.train_ar=True`: train the AR text encoder
+- `+trainer.train_ar=True`: train the AR text encoder
 
 Training samples per step are `train_batch_size × rollout.m × rollout.n` images and `train_batch_size × rollout.m` reasoning traces.
 
 Both the encoder and the DiT share one AdamW scheduler in the current scripts (`actor_rollout_ref.actor.optim.lr=3e-5`). The paper uses separate learning rates (2e-6 for the LLM, 3e-4 for the DiT under FlowGRPO-fast).
+
+LoRA training configs are shared between AR and DiT:
+
+- `actor_rollout_ref.model.lora_rank=8`
+- `actor_rollout_ref.model.lora_alpha=16`
+<!-- - `actor_rollout_ref.model.exclude_modules=".*visual.*"` -->
+- `actor_rollout_ref.model.lora.merge=True`: must apply since vllm-omni rollout engine does not support updating AR (text_encoder) LoRA weights yet.
 
 ### Dual reward config
 

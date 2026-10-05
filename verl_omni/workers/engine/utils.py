@@ -53,7 +53,7 @@ def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
     del visual_owner.visual
 
     # verl still run a dummy visual forward pass
-    visual_owner.visual = lambda *args, **kwargs: 0.0
+    visual_owner.visual = lambda *args, **kwargs: torch.tensor([0.0], device=module.device)
 
     logger.info("Stripped Qwen-VL vision tower from Qwen-Image AR module")
     return True
@@ -62,7 +62,7 @@ def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
 def patch_composite_ar_engine_module_build(
     ar_engine: FSDPEngineWithLMHead,
     diffusion_model_config: DiffusionModelConfig,
-    strategy: str = "fsdp",
+    strategy: str = "fsdp2",
 ) -> None:
     """Use ``DiffusersFSDPEngine._build_fsdp_module`` for the composite AR backend.
 

@@ -116,6 +116,10 @@ actor_rollout_ref:
       save_lora_only: false
       load_contents: ${.save_contents}
       async_save: false
+    ar:
+      _target_: verl_omni.workers.config.diffusion.actor.DiffusionActorARConfig
+      calculate_entropy: false
+      entropy_coeff: 0.0
     enable_timestep_staging: false
     use_no_sync_for_gradient_accumulation: false
     grad_clip: 1.0
