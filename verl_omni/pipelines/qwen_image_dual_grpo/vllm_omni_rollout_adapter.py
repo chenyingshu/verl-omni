@@ -86,7 +86,7 @@ def extract_prompt(texts: list[str]) -> list[str]:
         if m:
             refined_prompt = m.group(1).strip()
         else:
-            logger.warning("Revised Prompt: regex missed; feeding full CoT into DiT.")
+            logger.warning(f"Revised Prompt: regex missed; feeding full CoT into DiT ={text!r}.")
             refined_prompt = text.strip()
         refined_prompts.append(refined_prompt)
     return refined_prompts

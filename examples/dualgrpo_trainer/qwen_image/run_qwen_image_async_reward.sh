@@ -1,4 +1,11 @@
-# Qwen-Image LoRA DualGRPO RL, vllm_omni rollout
+# Qwen-Image full-weight DualGRPO RL with async reward, vllm_omni rollout.
+#
+# UnifiedReward runs on its own GPU pool and composite_single_turn_agent streams
+# each finished image to a reward worker while later samples are still generating.
+# PickScore still scores the AR stage inside those reward workers.
+#
+# Visible GPUs must cover both pools:
+#   NUM_GPUS_ACTOR_ROLLOUT (default 2) + NUM_GPUS_REWARD (default 1).
 set -x
 
 export FLASHINFER_DISABLE_VERSION_CHECK=1
@@ -18,13 +25,14 @@ data_test_path=$WORKSPACE/data/r2i_bench/qwen_image/test.parquet
 
 model_name=$WORKSPACE/models/Qwen/Qwen-Image
 # model_name=$WORKSPACE/models/tiny-random/Qwen-Image
-DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-2b
+DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-8b
 
-NUM_GPUS_ACTOR_ROLLOUT_REWARD=${NUM_GPUS:-4}
+NUM_GPUS_ACTOR_ROLLOUT=${NUM_GPUS_ACTOR_ROLLOUT:-${NUM_GPUS:-4}}
+NUM_GPUS_REWARD=${NUM_GPUS_REWARD:-2}
 NUM_NODES=${NUM_NODES:-1}
-ACTOR_SP=$NUM_GPUS_ACTOR_ROLLOUT_REWARD
+ACTOR_SP=$NUM_GPUS_ACTOR_ROLLOUT
 ROLLOUT_TP=2
-REWARD_TP=$NUM_GPUS_ACTOR_ROLLOUT_REWARD
+REWARD_TP=${NUM_GPUS_REWARD:-1}
 IMAGE_RESOLUTION=512
 
 ENGINE=vllm_omni
@@ -42,8 +50,8 @@ if ! python3 -c 'from verl_omni.utils.diffusion_attention import fa_available; r
     ROLLOUT_ATTN_BACKEND=TORCH_SDPA
 fi
 
-CURRENT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 # TODO:(susan) now ar and dit shares identical scheduler config, to set different lr
+CURRENT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 python3 -m verl_omni.trainer.main_diffusion \
     algorithm.adv_estimator=flow_grpo \
@@ -59,10 +67,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.model.algorithm=dual_grpo \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.attn_backend=${ATTN_BACKEND} \
-    actor_rollout_ref.model.lora_rank=8 \
-    actor_rollout_ref.model.lora_alpha=16 \
-    actor_rollout_ref.model.exclude_modules=".*visual.*" \
-    actor_rollout_ref.model.lora.merge=True \
     actor_rollout_ref.rollout.rollout_attn_backend=${ROLLOUT_ATTN_BACKEND} \
     actor_rollout_ref.actor.optim.lr=3e-5 \
     actor_rollout_ref.model.ar.optim.lr=2e-6 \
@@ -75,8 +79,8 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=$ACTOR_SP \
     +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
-    actor_rollout_ref.actor.diffusion_loss.loss_mode=dual_grpo \
-    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-4 \
+    actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo \
+    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
@@ -87,7 +91,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.rollout.name=$ENGINE \
     actor_rollout_ref.rollout.m=4 \
     actor_rollout_ref.rollout.n=4 \
-    actor_rollout_ref.rollout.agent.num_workers=$((NUM_GPUS_ACTOR_ROLLOUT_REWARD / ROLLOUT_TP)) \
+    actor_rollout_ref.rollout.agent.num_workers=$((NUM_GPUS_ACTOR_ROLLOUT / ROLLOUT_TP)) \
     actor_rollout_ref.rollout.agent.default_agent_loop=composite_single_turn_agent \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.layered_summon=True \
@@ -103,15 +107,17 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.rollout.val_kwargs.algo.noise_level=0.0 \
     actor_rollout_ref.rollout.step_execution=False \
     ++actor_rollout_ref.rollout.engine_kwargs.vllm_omni.max_num_seqs=${MAX_NUM_SEQS} \
-    reward.num_workers=1 \
+    reward.num_workers=$((NUM_GPUS_REWARD / REWARD_TP)) \
     reward.reward_model.enable=True \
-    reward.reward_model.enable_resource_pool=False \
-    reward.reward_model.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT_REWARD / REWARD_TP)) \
+    reward.reward_model.enable_resource_pool=True \
+    reward.reward_model.n_gpus_per_node=$NUM_GPUS_REWARD \
     reward.reward_model.nnodes=1 \
     reward.reward_model.model_path=$DIT_REWARD_MODEL_NAME \
     reward.reward_model.rollout.name=$REWARD_ENGINE \
     reward.reward_model.rollout.tensor_model_parallel_size=$REWARD_TP \
-    reward.reward_model.rollout.gpu_memory_utilization=0.3 \
+    reward.reward_model.rollout.gpu_memory_utilization=0.6 \
+    reward.reward_model.rollout.max_model_len=8192 \
+    reward.reward_model.rollout.free_cache_engine=False \
     reward.custom_reward_function.path=pkg://verl_omni.reward_loop.reward_manager.multi \
     reward.custom_reward_function.name=_multi_reward_placeholder \
     reward.reward_manager.name=MultiVisualRewardManager \
@@ -119,18 +125,18 @@ python3 -m verl_omni.trainer.main_diffusion \
     "+reward.reward_functions.ar.path=pkg://verl_omni.utils.reward_score.pickscore_reward" \
     '+reward.reward_functions.ar.name=compute_score_pickscore' \
     '+reward.reward_functions.ar.weight=0.0' \
-    '+reward.reward_functions.ar.device=cuda:0' \
+    '+reward.reward_functions.ar.device=cuda:4' \
     "+reward.reward_functions.dit.path=pkg://verl_omni.utils.reward_score.unified_reward" \
     '+reward.reward_functions.dit.name=compute_score_unified_reward' \
     '+reward.reward_functions.dit.weight=1.0' \
     "+trainer.train_ar=True" \
     trainer.logger='["console", "tensorboard", "wandb"]' \
     trainer.project_name=dual_grpo \
-    trainer.experiment_name=qwen_image_dualgrpo_lora_${CURRENT_TIMESTAMP} \
-    trainer.validation_data_dir=validation_data_lora_${CURRENT_TIMESTAMP} \
+    trainer.experiment_name=qwen_image_dualgrpo_async_reward_${CURRENT_TIMESTAMP} \
+    trainer.validation_data_dir=validation_data_async_reward_${CURRENT_TIMESTAMP} \
     trainer.log_val_generations=8 \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT_REWARD / NUM_NODES)) \
+    trainer.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT / NUM_NODES)) \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=30 \
     trainer.test_freq=30 \

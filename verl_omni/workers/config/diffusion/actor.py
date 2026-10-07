@@ -58,6 +58,7 @@ class DiffusionLossConfig(BaseConfig):
             "dpo",
             "dmd2",
             "dance_grpo",
+            "dual_grpo",
             "distill_kl",
             "distill_fm_mse",
         ]
@@ -153,6 +154,14 @@ class DiffusionActorConfig(BaseConfig):
     strategy: str = MISSING
     ppo_mini_batch_size: int = 256
     ppo_micro_batch_size_per_gpu: int = MISSING
+
+    # Token-PPO clip for the AR branch of dual_grpo. DiT keeps diffusion_loss.clip_ratio.
+    clip_ratio: float = 0.2
+    clip_ratio_low: float = 0.2
+    clip_ratio_high: float = 0.2
+    clip_ratio_c: float = 3.0
+    loss_agg_mode: str = "token-mean"
+
     diffusion_loss: DiffusionLossConfig = field(default_factory=DiffusionLossConfig)
     loss_scale_factor: Optional[float] = None
     use_kl_loss: bool = False
@@ -187,6 +196,16 @@ class DiffusionActorConfig(BaseConfig):
         """Validate diffusion actor configuration parameters."""
         assert self.strategy != MISSING
         assert self.rollout_n != MISSING
+        valid_loss_agg_modes = [
+            "token-mean",
+            "seq-mean-token-sum",
+            "seq-mean-token-mean",
+            "seq-mean-token-sum-norm",
+        ]
+        if self.loss_agg_mode not in valid_loss_agg_modes:
+            raise ValueError(f"Invalid loss_agg_mode: {self.loss_agg_mode}. Must be one of {valid_loss_agg_modes}")
+        if self.clip_ratio_c <= 1.0:
+            raise ValueError(f"clip_ratio_c must be greater than 1.0 for dual-clip token PPO, got {self.clip_ratio_c}.")
         valid_distill_modes = ["distill_kl", "distill_fm_mse"]
         if self.use_distill_loss and self.distill_loss_mode not in valid_distill_modes:
             raise ValueError(

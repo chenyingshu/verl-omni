@@ -46,7 +46,7 @@ def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
     if hasattr(module, "model") and hasattr(module.model, "visual"):  # full weights
         visual_owner = module.model
     elif hasattr(module, "model") and hasattr(module.model, "model") and hasattr(module.model.model, "visual"):  # lora
-        visual_owner = module
+        visual_owner = module.model.model
     if visual_owner is None:
         logger.warning("Qwen-VL vision tower not found on Qwen-ImageAR module; skipping strip")
         return False

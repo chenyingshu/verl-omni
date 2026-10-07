@@ -189,3 +189,39 @@ ar:
 
   # Other configs, e.g., attn_implementation
   override_config: {}
+
+  # Partial overlay on the DiT optimizer. Null inherits that field from actor.optim.
+  optim:
+
+    # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+    _target_: verl_omni.workers.config.diffusion.DiffusionModelAROptimizerConfig
+
+    # Learning rate. Null inherits actor.optim.lr.
+    lr: null
+
+    # Weight decay. Null inherits actor.optim.weight_decay.
+    weight_decay: null
+
+    # Adam betas. Null inherits actor.optim.betas.
+    betas: null
+
+    # Gradient clip norm. Null inherits actor.optim.clip_grad.
+    clip_grad: null
+
+    # Warmup steps ratio. Null inherits actor.optim.lr_warmup_steps_ratio.
+    lr_warmup_steps_ratio: null
+
+    # Warmup steps. Null inherits actor.optim.lr_warmup_steps.
+    lr_warmup_steps: null
+
+    # Scheduler type ("constant" or "cosine"). Null inherits actor.optim.lr_scheduler_type.
+    lr_scheduler_type: null
+
+    # Minimum LR ratio for cosine schedule. Null inherits actor.optim.min_lr_ratio.
+    min_lr_ratio: null
+
+    # Number of cosine cycles. Null inherits actor.optim.num_cycles.
+    num_cycles: null
+
+    # Extra kwargs forwarded to the optimizer constructor. Null inherits actor.optim.override_optimizer_config.
+    override_optimizer_config: null

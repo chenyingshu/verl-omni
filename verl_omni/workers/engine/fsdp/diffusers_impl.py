@@ -822,7 +822,7 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
         log_gpu_memory_usage("After load_fsdp_model_to_gpu", logger=logger)
 
         peft_config = None
-        merge_lora = self.model_config.lora.get("merge", False)
+        merge_lora = getattr(self.model_config, "lora", {}).get("merge", False)
 
         peft_model = getattr(self.module, "_fsdp_wrapped_module", self.module)
         if hasattr(peft_model, "peft_config"):  # LoRA
@@ -1639,6 +1639,17 @@ class CompositeFSDPEngine(BaseEngine):
             override_config=diffusion_model_config.ar.override_config,
         )
 
+    @staticmethod
+    def build_ar_optimizer_config(
+        optimizer_config: FSDPOptimizerConfig,
+        model_config: DiffusionModelConfig,
+    ) -> FSDPOptimizerConfig:
+        """Copy the DiT optimizer and overlay ``model.ar.optim`` fields that are set."""
+        overrides = {
+            key: value for key, value in model_config.ar.optim.items() if value is not None and key != "_target_"
+        }
+        return type(optimizer_config)(**{**dict(optimizer_config), **overrides})
+
     def __init__(
         self,
         model_config: DiffusionModelConfig,
@@ -1656,10 +1667,11 @@ class CompositeFSDPEngine(BaseEngine):
         # seperate engines, composite modules
         ar_model_config = self.build_ar_hf_model_config(model_config)
         ar_model_config.model_type = "language_model"
+        ar_optimizer_config = self.build_ar_optimizer_config(optimizer_config, model_config)
         self.ar_engine = FSDPEngineWithLMHead(
             model_config=ar_model_config,
             engine_config=engine_config,
-            optimizer_config=optimizer_config,
+            optimizer_config=ar_optimizer_config,
             checkpoint_config=checkpoint_config,
         )
         patch_composite_ar_engine_module_build(self.ar_engine, model_config, engine_config.strategy)
@@ -1879,7 +1891,11 @@ class CompositeFSDPEngine(BaseEngine):
         ar_peft_model = getattr(ar_module, "_fsdp_wrapped_module", ar_module) if ar_module is not None else None
         ar_peft_config = ar_peft_model.peft_config.get("default", None)
 
-        peft_config = self._merge_composite_peft_configs(dit_peft_config, ar_peft_config, self.model_config)
+        # currently only support lora.merge=True
+        merge_lora = self.model_config.lora.get("merge", False)
+        peft_config = None
+        if not merge_lora:
+            peft_config = self._merge_composite_peft_configs(dit_peft_config, ar_peft_config, self.model_config)
         return peft_config
 
     def get_per_tensor_param(
@@ -1898,7 +1914,7 @@ class CompositeFSDPEngine(BaseEngine):
             **kwargs,
         )
         # currently only support lora.merge=True
-        merge_lora = self.model_config.lora.get("merge", False)
+        merge_lora = getattr(self.model_config, "lora", {}).get("merge", False)
 
         def merged() -> Iterator[tuple[str, torch.Tensor]]:
             yield from dit_params

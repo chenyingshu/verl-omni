@@ -90,6 +90,11 @@ actor_rollout_ref:
     strategy: veomni
     ppo_mini_batch_size: 256
     ppo_micro_batch_size_per_gpu: null
+    clip_ratio: 0.2
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+    clip_ratio_c: 3.0
+    loss_agg_mode: token-mean
     diffusion_loss:
       _target_: verl_omni.workers.config.diffusion.DiffusionLossConfig
       loss_mode: ${oc.select:actor_rollout_ref.model.algorithm,flow_grpo}
@@ -447,6 +452,18 @@ actor_rollout_ref:
     ar:
       _target_: verl_omni.workers.config.diffusion.DiffusionModelARConfig
       override_config: {}
+      optim:
+        _target_: verl_omni.workers.config.diffusion.DiffusionModelAROptimizerConfig
+        lr: null
+        weight_decay: null
+        betas: null
+        clip_grad: null
+        lr_warmup_steps_ratio: null
+        lr_warmup_steps: null
+        lr_scheduler_type: null
+        min_lr_ratio: null
+        num_cycles: null
+        override_optimizer_config: null
     model_type: diffusion_model
   separate: false
   hybrid_engine: true

@@ -53,6 +53,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.model.attn_backend=${ATTN_BACKEND} \
     actor_rollout_ref.rollout.rollout_attn_backend=${ROLLOUT_ATTN_BACKEND} \
     actor_rollout_ref.actor.optim.lr=3e-5 \
+    actor_rollout_ref.model.ar.optim.lr=2e-6 \
     actor_rollout_ref.actor.optim.weight_decay=0.0001 \
     actor_rollout_ref.actor.ppo_mini_batch_size=2 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -62,8 +63,11 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=$ACTOR_SP \
     +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
-    actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo \
-    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
+    actor_rollout_ref.actor.diffusion_loss.loss_mode=dual_grpo \
+    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-4 \
+    actor_rollout_ref.actor.clip_ratio_low=0.2 \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
+    actor_rollout_ref.actor.clip_ratio_c=10.0 \
     actor_rollout_ref.rollout.ar_calculate_log_probs=True \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
@@ -120,4 +124,4 @@ python3 -m verl_omni.trainer.main_diffusion \
     trainer.save_freq=30 \
     trainer.test_freq=30 \
     trainer.total_epochs=15 \
-    trainer.total_training_steps=3 "$@"
+    trainer.total_training_steps=300 "$@"

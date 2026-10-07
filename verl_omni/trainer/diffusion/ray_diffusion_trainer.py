@@ -91,6 +91,7 @@ from verl_omni.trainer.diffusion.teacher_manager import DiffusionTeacherManager
 from verl_omni.utils.tracking import (
     _export_video,
     batch_items,
+    log_ar_generations_to_wandb,
     log_wandb_media,
     wrap_val_samples_for_wandb,
 )
@@ -704,7 +705,11 @@ class BaseRayDiffusionTrainer(ABC):
             rng = np.random.RandomState(42)
             rng.shuffle(samples)
             samples = samples[:generations_to_log]
-            self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
+            ar_logger = self.config.trainer.logger.copy()
+            if "wandb" in ar_logger:
+                ar_logger.remove("wandb")  # table set output as wandb image already
+                log_ar_generations_to_wandb(self.validation_generations_logger, samples, self.global_steps)
+            self.validation_generations_logger.log(ar_logger, samples, self.global_steps)
 
     def _dump_ar_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""

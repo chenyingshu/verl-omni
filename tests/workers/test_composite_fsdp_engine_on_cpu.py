@@ -30,9 +30,14 @@ import pytest
 import torch
 from tensordict import TensorDict
 from transformers import Qwen2_5_VLConfig
+from verl.workers.config import FSDPOptimizerConfig
 from verl.workers.engine.base import BaseEngine
 
-from verl_omni.workers.config.diffusion.model import DiffusionModelARConfig, DiffusionModelConfig
+from verl_omni.workers.config.diffusion.model import (
+    DiffusionModelARConfig,
+    DiffusionModelAROptimizerConfig,
+    DiffusionModelConfig,
+)
 from verl_omni.workers.engine.fsdp.diffusers_impl import CompositeFSDPEngine, _CompositeEngineCtx
 
 from .test_composite_fsdp_engine import create_ar_infer_batch, create_ar_train_batch
@@ -136,6 +141,35 @@ class TestBuildARHfModelConfig:
         hf_cfg = engine.build_ar_hf_model_config(dm_cfg)
 
         assert hf_cfg.path == local_te_dir
+
+
+class TestBuildAROptimizerConfig:
+    def test_unset_fields_inherit_dit_optimizer(self):
+        base = FSDPOptimizerConfig(lr=3e-6, weight_decay=1e-4, total_training_steps=10)
+        model_cfg = _make_diffusion_model_config()
+
+        merged = CompositeFSDPEngine.build_ar_optimizer_config(base, model_cfg)
+
+        assert merged is not base
+        assert merged.lr == pytest.approx(3e-6)
+        assert merged.weight_decay == pytest.approx(1e-4)
+        assert merged.total_training_steps == 10
+        assert base.lr == pytest.approx(3e-6)
+
+    def test_set_fields_override_dit_optimizer(self):
+        base = FSDPOptimizerConfig(lr=3e-6, weight_decay=1e-4, total_training_steps=10, clip_grad=1.0)
+        model_cfg = _make_diffusion_model_config(
+            optim=DiffusionModelAROptimizerConfig(lr=2e-6, weight_decay=0.0),
+        )
+
+        merged = CompositeFSDPEngine.build_ar_optimizer_config(base, model_cfg)
+
+        assert merged.lr == pytest.approx(2e-6)
+        assert merged.weight_decay == pytest.approx(0.0)
+        assert merged.clip_grad == pytest.approx(1.0)
+        assert merged.total_training_steps == 10
+        assert base.lr == pytest.approx(3e-6)
+        assert base.weight_decay == pytest.approx(1e-4)
 
 
 class TestNextStage:
@@ -439,18 +473,30 @@ class TestStripQwenVlVisionTower:
         from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
 
         module = torch.nn.Module()
+        module.device = torch.device("cpu")
         module.model = torch.nn.Module()
         module.model.visual = torch.nn.Linear(4, 4)
         assert strip_qwen_image_vision_tower(module) is True
-        assert not hasattr(module.model, "visual")
+        assert callable(module.model.visual)
+        assert not isinstance(module.model.visual, torch.nn.Module)
+        out = module.model.visual(torch.zeros(2, 3), grid_thw=torch.zeros(1, 3))
+        torch.testing.assert_close(out, torch.tensor([0.0]))
+        assert out.device == module.device
 
-    def test_strips_top_level_visual(self):
+    def test_strips_lora_module_visual(self):
         from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
 
         module = torch.nn.Module()
-        module.visual = torch.nn.Linear(4, 4)
+        module.device = torch.device("cpu")
+        module.model = torch.nn.Module()
+        module.model.model = torch.nn.Module()
+        module.model.model.visual = torch.nn.Linear(4, 4)
         assert strip_qwen_image_vision_tower(module) is True
-        assert not hasattr(module, "visual")
+        assert callable(module.model.model.visual)
+        assert not isinstance(module.model.model.visual, torch.nn.Module)
+        out = module.model.model.visual(torch.zeros(2, 3), grid_thw=torch.zeros(1, 3))
+        torch.testing.assert_close(out, torch.tensor([0.0]))
+        assert out.device == module.device
 
     def test_returns_false_when_missing(self):
         from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower

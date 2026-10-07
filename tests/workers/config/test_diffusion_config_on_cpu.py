@@ -21,7 +21,11 @@ from verl_omni.workers.config.diffusion.actor import (
     DiffusionLossConfig,
     FSDPDiffusionActorConfig,
 )
-from verl_omni.workers.config.diffusion.model import DiffusionModelARConfig, DiffusionModelConfig
+from verl_omni.workers.config.diffusion.model import (
+    DiffusionModelARConfig,
+    DiffusionModelAROptimizerConfig,
+    DiffusionModelConfig,
+)
 from verl_omni.workers.config.diffusion.rollout import (
     DiffusionARConfig,
     DiffusionPipelineConfig,
@@ -88,6 +92,10 @@ class TestDiffusionLossConfig:
         cfg = DiffusionLossConfig(loss_mode="dance_grpo")
         assert cfg.loss_mode == "dance_grpo"
 
+    def test_dual_grpo_loss_mode(self):
+        cfg = DiffusionLossConfig(loss_mode="dual_grpo")
+        assert cfg.loss_mode == "dual_grpo"
+
 
 # ---------------------------------------------------------------------------
 # DiffusionARConfig / DiffusionModelARConfig / DiffusionActorARConfig
@@ -122,12 +130,21 @@ class TestDiffusionModelARConfig:
     def test_defaults(self):
         cfg = DiffusionModelARConfig()
         assert cfg.override_config == {}
+        assert cfg.optim.lr is None
+        assert cfg.optim.weight_decay is None
+        assert cfg.optim.clip_grad is None
 
     def test_override_config(self):
         cfg = DiffusionModelARConfig(
             override_config={"attn_implementation": "flash_attention_2"},
         )
         assert cfg.override_config["attn_implementation"] == "flash_attention_2"
+
+    def test_optimizer_overlay(self):
+        cfg = DiffusionModelARConfig(optim=DiffusionModelAROptimizerConfig(lr=2e-6, weight_decay=0.0))
+        assert cfg.optim.lr == pytest.approx(2e-6)
+        assert cfg.optim.weight_decay == pytest.approx(0.0)
+        assert cfg.optim.lr_scheduler_type is None
 
 
 class TestDiffusionActorARConfig:
