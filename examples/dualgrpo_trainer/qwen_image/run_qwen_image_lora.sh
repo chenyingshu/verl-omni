@@ -17,7 +17,6 @@ data_train_path=$WORKSPACE/data/r2i_bench/qwen_image/train.parquet
 data_test_path=$WORKSPACE/data/r2i_bench/qwen_image/test.parquet
 
 model_name=$WORKSPACE/models/Qwen/Qwen-Image
-# model_name=$WORKSPACE/models/tiny-random/Qwen-Image
 DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-2b
 
 NUM_GPUS_ACTOR_ROLLOUT_REWARD=${NUM_GPUS:-4}
@@ -76,7 +75,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=$ACTOR_SP \
     +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
     actor_rollout_ref.actor.diffusion_loss.loss_mode=dual_grpo \
-    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-4 \
+    actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.clip_ratio_c=10.0 \
@@ -133,6 +132,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     trainer.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT_REWARD / NUM_NODES)) \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=30 \
-    trainer.test_freq=30 \
+    trainer.test_freq=5 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=300 "$@"

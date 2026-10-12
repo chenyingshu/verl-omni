@@ -1,11 +1,11 @@
-# Qwen-Image full-weight DualGRPO RL with async reward, vllm_omni rollout.
+# Qwen-Image LoRA DualGRPO RL with async reward, vllm_omni rollout.
 #
 # UnifiedReward runs on its own GPU pool and composite_single_turn_agent streams
 # each finished image to a reward worker while later samples are still generating.
 # PickScore still scores the AR stage inside those reward workers.
 #
 # Visible GPUs must cover both pools:
-#   NUM_GPUS_ACTOR_ROLLOUT (default 2) + NUM_GPUS_REWARD (default 1).
+#   NUM_GPUS_ACTOR_ROLLOUT (default 4) + NUM_GPUS_REWARD (default 4).
 set -x
 
 export FLASHINFER_DISABLE_VERSION_CHECK=1
@@ -24,7 +24,6 @@ data_train_path=$WORKSPACE/data/r2i_bench/qwen_image/train.parquet
 data_test_path=$WORKSPACE/data/r2i_bench/qwen_image/test.parquet
 
 model_name=$WORKSPACE/models/Qwen/Qwen-Image
-# model_name=$WORKSPACE/models/tiny-random/Qwen-Image
 DIT_REWARD_MODEL_NAME=$WORKSPACE/models/CodeGoat24/UnifiedReward-2.0-qwen3vl-8b
 
 NUM_GPUS_ACTOR_ROLLOUT=${NUM_GPUS_ACTOR_ROLLOUT:-${NUM_GPUS:-4}}
@@ -93,7 +92,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TP \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.m=8 \
+    actor_rollout_ref.rollout.m=4 \
     actor_rollout_ref.rollout.n=4 \
     actor_rollout_ref.rollout.agent.num_workers=$((NUM_GPUS_ACTOR_ROLLOUT / ROLLOUT_TP)) \
     actor_rollout_ref.rollout.agent.default_agent_loop=composite_single_turn_agent \
@@ -143,6 +142,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     trainer.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT / NUM_NODES)) \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=30 \
-    trainer.test_freq=30 \
+    trainer.test_freq=5 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=300 "$@"

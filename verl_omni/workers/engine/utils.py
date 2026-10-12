@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def should_strip_qwen_image_vision_tower(model_config: DiffusionModelConfig) -> bool:
+    """Return whether this checkpoint is text-only Qwen-Image.
+
+    ``architecture`` is ``model_index.json`` ``_class_name`` after the weights are
+    resolved, so a Hugging Face snapshot hash directory still matches. Qwen-Image-Edit
+    uses a different class name and keeps its vision tower.
+    """
+    return getattr(model_config, "architecture", None) == "QwenImagePipeline"
+
+
 def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
     """Drop Qwen2.5-VL vision tower for Qwen-Image before FSDP wrap (matches vLLM-Omni Qwen-Image).
 
@@ -80,9 +90,8 @@ def patch_composite_ar_engine_module_build(
 
     def _build_module(self):
         module = self._original_build_module()
-        # Monkey patch for Qwen-Image only
-        # Match vLLM-Omni: Qwen-Image never uses the vision tower on text-only data.
-        if self._verl_omni_diffusion_model_config.path.endswith("Qwen-Image"):
+        # Qwen-Image is text-only. Qwen-Image-Edit keeps the vision tower.
+        if should_strip_qwen_image_vision_tower(self._verl_omni_diffusion_model_config):
             strip_qwen_image_vision_tower(module)
         return module
 

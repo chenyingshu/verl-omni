@@ -473,6 +473,11 @@ class BaseRayDiffusionTrainer(ABC):
         self.train_ar_n_diffusion = self.config.trainer.get("train_ar", False) and not self.config.trainer.get(
             "freeze_diffusion", False
         )
+        # DualGRPO composite engine does not support a ref model or teacher yet.
+        # Each actor infer advances the AR/DiT stage, so an extra ref or teacher
+        # forward would run the AR update on the DiT engine.
+        if self.train_ar_n_diffusion and (self.use_reference_policy or self.use_teacher_policy):
+            raise ValueError("DualGRPO composite engine does not support a reference model or teacher yet.")
         if not self.train_ar_n_diffusion:
             self.config.actor_rollout_ref.rollout.m = 1
 
@@ -1817,11 +1822,13 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                             config=self.config.algorithm,
                         )
                         if self.train_ar_n_diffusion:
-                            # AR has different group size
-                            ar_batch.batch["sample_level_scores"] = ar_reward_tensor
-                            ar_batch.batch["sample_level_rewards"] = ar_batch.batch["sample_level_scores"].expand(
-                                -1, ar_batch.batch["old_log_probs"].shape[1]
-                            )  # token-level rewards
+                            # One scalar per trace. Repeating it across response tokens before
+                            # the group std counts each reward once per token, including pads.
+                            ar_scores = ar_reward_tensor
+                            if ar_scores.ndim == 1:
+                                ar_scores = ar_scores.unsqueeze(-1)  # （batch, 1)
+                            ar_batch.batch["sample_level_scores"] = ar_scores
+                            ar_batch.batch["sample_level_rewards"] = ar_scores
                             if ar_reward_extra_infos_dict:
                                 ar_batch.non_tensor_batch.update(
                                     {k: np.array(v) for k, v in ar_reward_extra_infos_dict.items()}
@@ -1832,6 +1839,13 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                                 norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                                 global_std=self.config.algorithm.global_std,
                                 config=self.config.algorithm,
+                            )
+                            response_length = ar_batch.batch["old_log_probs"].shape[1]
+                            ar_batch.batch["advantages"] = (
+                                ar_batch.batch["advantages"].expand(-1, response_length).contiguous()
+                            )
+                            ar_batch.batch["returns"] = (
+                                ar_batch.batch["returns"].expand(-1, response_length).contiguous()
                             )
 
                     # update actor

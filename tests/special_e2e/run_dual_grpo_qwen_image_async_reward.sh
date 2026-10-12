@@ -100,7 +100,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
     +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
-    actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo \
+    actor_rollout_ref.actor.diffusion_loss.loss_mode=dual_grpo \
     actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
     actor_rollout_ref.rollout.ar_calculate_log_probs=True \
     actor_rollout_ref.rollout.calculate_log_probs=True \

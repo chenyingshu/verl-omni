@@ -1811,13 +1811,12 @@ class CompositeFSDPEngine(BaseEngine):
             **kwargs,
         )
         ar_path = os.path.join(local_path, self.AR_CHECKPOINT_SUBDIR)
-        if os.path.isdir(ar_path):
-            self.ar_engine.load_checkpoint(
-                local_path=ar_path,
-                hdfs_path=hdfs_path,
-                del_local_after_load=del_local_after_load,
-                **kwargs,
-            )
+        self.ar_engine.load_checkpoint(
+            local_path=ar_path,
+            hdfs_path=hdfs_path,
+            del_local_after_load=del_local_after_load,
+            **kwargs,
+        )
         torch.distributed.barrier()
 
     # TODO: (susan) to be tested after vllm-omni support text_encoder lora update

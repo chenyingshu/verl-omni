@@ -5,7 +5,7 @@
 # PickScore still scores the AR stage inside those reward workers.
 #
 # Visible GPUs must cover both pools:
-#   NUM_GPUS_ACTOR_ROLLOUT (default 2) + NUM_GPUS_REWARD (default 1).
+#   NUM_GPUS_ACTOR_ROLLOUT (default 4) + NUM_GPUS_REWARD (default 2).
 set -x
 
 export FLASHINFER_DISABLE_VERSION_CHECK=1
@@ -69,7 +69,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.model.attn_backend=${ATTN_BACKEND} \
     actor_rollout_ref.rollout.rollout_attn_backend=${ROLLOUT_ATTN_BACKEND} \
     actor_rollout_ref.actor.optim.lr=3e-5 \
-    actor_rollout_ref.model.ar.optim.lr=2e-6 \
+    actor_rollout_ref.model.ar.optim.lr=5e-6 \
     actor_rollout_ref.actor.optim.weight_decay=0.0001 \
     actor_rollout_ref.actor.ppo_mini_batch_size=4 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
@@ -79,7 +79,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.fsdp_config.ulysses_sequence_parallel_size=$ACTOR_SP \
     +actor_rollout_ref.actor.fsdp_config.use_dynamic_bsz=False \
-    actor_rollout_ref.actor.diffusion_loss.loss_mode=flow_grpo \
+    actor_rollout_ref.actor.diffusion_loss.loss_mode=dual_grpo \
     actor_rollout_ref.actor.diffusion_loss.clip_ratio=1e-5 \
     actor_rollout_ref.actor.clip_ratio_low=0.2 \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
@@ -139,6 +139,6 @@ python3 -m verl_omni.trainer.main_diffusion \
     trainer.n_gpus_per_node=$((NUM_GPUS_ACTOR_ROLLOUT / NUM_NODES)) \
     trainer.nnodes=$NUM_NODES \
     trainer.save_freq=30 \
-    trainer.test_freq=30 \
+    trainer.test_freq=5 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=300 "$@"

@@ -109,7 +109,7 @@ def create_composite_training_config(
                 "strategy=" + strategy,
                 "diffusion_loss.clip_ratio=0.0001",
                 "diffusion_loss.adv_clip_max=5.0",
-                "diffusion_loss.loss_mode=flow_grpo",
+                "diffusion_loss.loss_mode=dual_grpo",
                 "ppo_mini_batch_size=4",
                 "ppo_micro_batch_size_per_gpu=4",
                 "optim.lr=1e-4",

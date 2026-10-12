@@ -469,6 +469,16 @@ class TestCompositeEngineCtx:
 
 
 class TestStripQwenVlVisionTower:
+    def test_strips_only_qwen_image_pipeline_architecture(self):
+        from verl_omni.workers.engine.utils import should_strip_qwen_image_vision_tower
+
+        snapshot = "/cache/models--Qwen--Qwen-Image/snapshots/abc123"
+        assert should_strip_qwen_image_vision_tower(SimpleNamespace(path=snapshot, architecture="QwenImagePipeline"))
+        assert not should_strip_qwen_image_vision_tower(
+            SimpleNamespace(path="Qwen/Qwen-Image-Edit", architecture="QwenImageEditPlusPipeline")
+        )
+        assert not should_strip_qwen_image_vision_tower(SimpleNamespace(path="Qwen/Qwen-Image", architecture=None))
+
     def test_strips_nested_model_visual(self):
         from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
 
