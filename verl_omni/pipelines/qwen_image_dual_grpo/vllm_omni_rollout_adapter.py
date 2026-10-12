@@ -17,12 +17,10 @@
 from __future__ import annotations
 
 import logging
-import random
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import numpy as np
 import torch
 from verl.utils.torch_functional import get_response_mask
 from vllm_omni.diffusion.data import DiffusionOutput
@@ -49,6 +47,17 @@ from verl_omni.pipelines.request_batch import (
 __all__ = ["QwenImagePipelineWithDualLogProb"]
 
 logger = logging.getLogger(__name__)
+
+
+def _seed_rollout_device(seed: int, device: torch.device) -> None:
+    """Seed the RNG ``generate`` samples from, without touching other devices."""
+    if device.type == "cpu":
+        torch.default_generator.manual_seed(seed)
+        return
+    device_mod = torch.get_device_module(device.type)
+    with device_mod.device(device):
+        device_mod.manual_seed(seed)
+
 
 # system prompt used for DiT
 SYSTEM_PROMPT = (
@@ -116,21 +125,23 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
         return_logprobs: bool = True,
         **ar_kwargs,
     ):
-        # ref： https://github.com/verl-project/verl/blob/main/verl/workers/rollout/hf_rollout.py#L54
+        # Sampling reads the process-global RNG. Fork that state so this seed
+        # stays inside this generate and is restored before DiT runs.
         seed = ar_kwargs.pop("seed", None)
-        if seed is not None:
-            seed = int(seed)
-            random.seed(seed)
-            np.random.seed(seed)
-            torch.manual_seed(seed)
+        device = torch.device(self.device)
+        fork_devices = [device] if seed is not None and device.type != "cpu" else []
+        with torch.random.fork_rng(devices=fork_devices, enabled=seed is not None):
+            if seed is not None:
+                _seed_rollout_device(int(seed), device)
 
-        outputs = self.text_encoder.generate(
-            input_ids=prompt_ids.to(self.device),
-            attention_mask=attention_mask.to(self.device),
-            return_dict_in_generate=True,
-            output_scores=return_logprobs,  # apply temperature, top_p, top_k, repetition_penalty
-            **ar_kwargs,
-        )
+            # ref： https://github.com/verl-project/verl/blob/main/verl/workers/rollout/hf_rollout.py#L54
+            outputs = self.text_encoder.generate(
+                input_ids=prompt_ids.to(device),
+                attention_mask=attention_mask.to(device),
+                return_dict_in_generate=True,
+                output_scores=return_logprobs,  # apply temperature, top_p, top_k, repetition_penalty
+                **ar_kwargs,
+            )
         max_new_tokens = ar_kwargs["max_new_tokens"]
 
         # huggingface generate will stop generating when all the batch reaches [EOS].

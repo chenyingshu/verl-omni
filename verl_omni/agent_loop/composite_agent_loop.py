@@ -199,7 +199,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             dit_global_indices = None
             if global_indices is not None:
                 ar_global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
-                dit_global_indices = np.repeat(ar_global_indices, diffusion_n)
+                dit_global_indices = (ar_global_indices[:, None] * diffusion_n + np.arange(diffusion_n)).reshape(-1)
             per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, dit_global_indices)
             ar_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch), ar_global_indices)
 
