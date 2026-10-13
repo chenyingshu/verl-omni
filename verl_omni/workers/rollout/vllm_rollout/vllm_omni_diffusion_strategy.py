@@ -38,6 +38,52 @@ _GPU_WORKER_EXTENSION = "verl_omni.workers.rollout.vllm_rollout.utils.vLLMOmniCo
 _NPU_WORKER_EXTENSION = "verl_omni.workers.rollout.vllm_rollout.npu_utils.vLLMOmniNPUColocateWorkerExtension"
 
 
+def _diffusion_ingress_allowed_fields() -> frozenset[str]:
+    """Mirror vllm-omni's diffusion ingress allowlist.
+
+    TODO (vllm-omni): Clean up OmniEngineArgs boundary; tracked in
+    https://github.com/vllm-project/vllm-omni/issues/8503.
+    """
+    from dataclasses import fields
+    from typing import Any, cast
+
+    import vllm_omni.config.omni_config as omni_config_mod
+    from vllm_omni.config import VllmOmniOrchestratorConfig
+    from vllm_omni.diffusion.data import OmniDiffusionConfig
+    from vllm_omni.engine.arg_utils import orchestrator_field_names
+
+    try:
+        from vllm.entrypoints.launchers.cli_args import FrontendArgs
+    except ModuleNotFoundError as error:
+        if error.name not in {"vllm.entrypoints.launchers", "vllm.entrypoints.launchers.cli_args"}:
+            raise
+        # The Ascend NPU smoke image can expose frontend args at the
+        # pre-launchers path even though the GPU v0.30 wheel uses launchers.
+        from vllm.entrypoints.openai.cli_args import FrontendArgs
+
+    frontend_fields = {f.name for f in fields(FrontendArgs)}
+
+    def _get_fields(attr: str) -> set[str]:
+        return set(getattr(omni_config_mod, attr, ()))
+
+    stage_fields = (
+        {f.name for f in fields(OmniDiffusionConfig)}
+        | _get_fields("_DIFFUSION_OWNED_STAGE_ENGINE_FIELDS")
+        | _get_fields("_STAGE_DEPLOY_ENGINE_FIELDS")
+        | _get_fields("_PIPELINE_DEPLOY_CLI_FIELDS")
+        | _get_fields("_DIFFUSION_STAGE_METADATA_FIELDS")
+        | _get_fields("_DIFFUSION_DEFAULT_FACTORY_FIELDS")
+    )
+    infra_fields = (
+        _get_fields("_DIFFUSION_SHARED_ONLY_ENGINE_FIELDS")
+        | _get_fields("_NON_STAGE_ENGINE_CLI_FIELDS")
+        | frontend_fields
+        | {f.name for f in fields(cast(Any, VllmOmniOrchestratorConfig))}
+        | orchestrator_field_names()
+    )
+    return frozenset(stage_fields | infra_fields)
+
+
 def _diffusion_output_type(sampling_params: dict[str, Any]) -> str:
     output_type = sampling_params.get("output_type")
     if output_type is None:
@@ -103,18 +149,63 @@ class DiffusionStrategy(OmniStrategyBase):
         return _GPU_WORKER_EXTENSION
 
     def prepare_engine_args(self, engine_args: dict[str, Any], args: Namespace) -> None:
-        # TODO(vllm-omni#7564): Drop this pin-compat shim; tracked in verl-omni#445.
-        text_encoder_tp = self.server.config.text_encoder_tp_size
+        config = self.server.config
+        parallel_config = engine_args.get("parallel_config")
+        if parallel_config is not None:
+            parallel_config = dict(parallel_config) if isinstance(parallel_config, Mapping) else asdict(parallel_config)
+
+        # Resource-bearing degrees must agree with the config used by verl's allocator.
+        topology = {
+            "tensor_parallel_size": config.tensor_model_parallel_size,
+            "ulysses_degree": config.ulysses_degree,
+            "ring_degree": config.ring_degree,
+            "sequence_parallel_size": config.ulysses_degree * config.ring_degree,
+            "data_parallel_size": config.data_parallel_size,
+            "pipeline_parallel_size": config.pipeline_model_parallel_size,
+        }
+        explicit_kwargs = {
+            key.replace("-", "_"): value for key, value in (config.engine_kwargs.get("vllm_omni", {}) or {}).items()
+        }
+        for key, value in topology.items():
+            cli_value = getattr(args, key, None)
+            nested_value = (parallel_config or {}).get(key)
+            aliases = {"ulysses_degree": "usp", "ring_degree": "ring"}
+            explicit = key in explicit_kwargs or aliases.get(key) in explicit_kwargs
+            if (cli_value is not None and cli_value != value and (explicit or cli_value != 1)) or (
+                nested_value is not None and nested_value != value
+            ):
+                raise ValueError(
+                    f"Conflicting {key}; configure topology through actor_rollout_ref.rollout, not engine_kwargs."
+                )
+            engine_args[key] = value
+            if parallel_config is not None:
+                parallel_config[key] = value
+
+        for key, default in (("vae_patch_parallel_size", 1), ("vae_parallel_mode", "tile"), ("vae_use_tiling", False)):
+            value = getattr(config, key)
+            cli_value = getattr(args, key, None)
+            if cli_value is not None and (cli_value != default or key in explicit_kwargs):
+                if value not in (default, cli_value):
+                    raise ValueError(f"Conflicting {key} in rollout config and engine_kwargs.")
+                value = cli_value
+            if key != "vae_use_tiling" and parallel_config is not None:
+                nested_value = parallel_config.get(key)
+                if nested_value is not None and (nested_value != getattr(config, key) or nested_value != value):
+                    raise ValueError(f"Conflicting {key} in rollout config and parallel_config.")
+                parallel_config[key] = value
+            engine_args[key] = value
+
+        # Upstream vllm-omni#7652 resolved vllm-omni#7564 (tracked in verl-omni#445 P31);
+        # text_encoder_tp_size is now preserved natively in OmniEngineArgs.
+        text_encoder_tp = config.text_encoder_tp_size
         cli_text_encoder_tp = getattr(args, "text_encoder_tp_size", None)
         if cli_text_encoder_tp is not None:
             if text_encoder_tp not in (1, cli_text_encoder_tp):
                 raise ValueError("Conflicting text_encoder_tp_size in rollout config and engine_kwargs.")
             text_encoder_tp = cli_text_encoder_tp
 
-        parallel_config = engine_args.get("parallel_config")
-        tp_size = self.server.config.tensor_model_parallel_size
+        dit_world_size = config.tensor_model_parallel_size * config.ulysses_degree * config.ring_degree
         if parallel_config is not None:
-            parallel_config = dict(parallel_config) if isinstance(parallel_config, Mapping) else asdict(parallel_config)
             nested_text_encoder_tp = parallel_config.get("text_encoder_tp_size")
             if nested_text_encoder_tp is not None:
                 if nested_text_encoder_tp != text_encoder_tp and (
@@ -122,11 +213,19 @@ class DiffusionStrategy(OmniStrategyBase):
                 ):
                     raise ValueError("Conflicting text_encoder_tp_size in rollout/engine_kwargs and parallel_config.")
                 text_encoder_tp = nested_text_encoder_tp
-            tp_size = parallel_config.get("tensor_parallel_size", tp_size)
 
-        if text_encoder_tp < 1 or text_encoder_tp not in (1, tp_size):
-            raise ValueError(f"text_encoder_tp_size must be 1 or equal to tensor parallel size ({tp_size}).")
+        if text_encoder_tp < 1 or text_encoder_tp not in (1, dit_world_size):
+            raise ValueError(f"text_encoder_tp_size must be 1 or equal to DiT group size ({dit_world_size}).")
         engine_args["text_encoder_tp_size"] = text_encoder_tp
+        if config.ulysses_degree * config.ring_degree > 1:
+            for key in ("cfg_parallel_size", "allgather_degree"):
+                value = (parallel_config or {}).get(key, getattr(args, key, None))
+                if value not in (None, 1):
+                    raise ValueError(f"Rollout sequence parallelism requires {key}=1.")
+            num_gpus = engine_args.get("num_gpus")
+            if num_gpus not in (None, dit_world_size):
+                raise ValueError(f"num_gpus must match the allocated DiT group size ({dit_world_size}).")
+            engine_args["num_gpus"] = dit_world_size
         if parallel_config is not None:
             parallel_config["text_encoder_tp_size"] = text_encoder_tp
             engine_args["parallel_config"] = parallel_config
@@ -139,7 +238,6 @@ class DiffusionStrategy(OmniStrategyBase):
         )
         # TODO (mike): read custom_pipeline from engine_args.
         if pipeline_path is not None:
-            engine_args["enable_dummy_pipeline"] = True
             engine_args["custom_pipeline_args"] = {"pipeline_class": pipeline_path}
 
             pipeline_cls = VllmOmniPipelineBase.get_class(
@@ -161,6 +259,15 @@ class DiffusionStrategy(OmniStrategyBase):
 
         engine_args["enable_prompt_embed_cache"] = self.server.config.enable_prompt_embed_cache
         engine_args["prompt_embed_cache_size"] = self.server.config.prompt_embed_cache_size
+
+        # Strip LLM-only fields from OmniEngineArgs before passing to diffusion ingress.
+        # Tracked upstream in https://github.com/vllm-project/vllm-omni/issues/8503.
+        allowed = _diffusion_ingress_allowed_fields()
+        dropped = sorted(key for key in engine_args if key not in allowed)
+        for key in dropped:
+            del engine_args[key]
+        if dropped:
+            logger.info("Dropping LLM-only engine args rejected by diffusion ingress: %s", dropped)
 
     def preprocess_input(
         self,

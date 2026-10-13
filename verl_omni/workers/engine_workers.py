@@ -69,6 +69,7 @@ from verl_omni.workers.config import (
     OmniModelConfig,
 )
 from verl_omni.workers.config.diffusion import DiffusionDistillationTeacherModelConfig
+from verl_omni.workers.rollout.base import get_rollout_sequence_parallel_size
 from verl_omni.workers.rollout.vllm_rollout.zmq_utils import make_update_zmq_handle, make_update_zmq_id
 from verl_omni.workers.utils.losses import diffusion_loss, omni_loss
 
@@ -816,7 +817,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             # TODO: move rollout_device_mesh into ServerAdapter
             # 3.1 build rollout device mesh (sglang need only)
-            infer_tp = rollout_config.tensor_model_parallel_size * rollout_config.data_parallel_size
+            infer_tp = (
+                rollout_config.tensor_model_parallel_size
+                * rollout_config.data_parallel_size
+                * get_rollout_sequence_parallel_size(rollout_config)
+            )
             infer_pp = rollout_config.pipeline_model_parallel_size
             infer_world_size = infer_tp * infer_pp
             dp = self.world_size // infer_world_size
@@ -1075,6 +1080,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 0. send_weights only for async training with disaggregated trainer and rollout
         if effective_mode != "naive":
+            if effective_mode == "omni_delta_sharded":
+                # The delta engine owns the sync state machine (seed vs steady,
+                # snapshot prime), so it drives the training engine itself.
+                # Full-weight only: the engine's shard export raises under LoRA.
+                with RLInsightLogger.trace_state("update_weights", state_lane_id=f"rank_{self.rank}"):
+                    metrics = await self.checkpoint_engine.send_weights(self.actor.engine, global_steps=global_steps)
+                return metrics or {}
+
             actor_has_lora = _get_engine_lora_config(self.actor.engine, self.rollout_adapter) is not None
 
             if actor_has_lora and not self.peft_merge:

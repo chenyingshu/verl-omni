@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Literal
 
+import PIL.Image
 import torch
 import torch.nn.functional as F
 from vllm_omni.diffusion.data import DiffusionOutput, OmniDiffusionConfig
@@ -50,10 +52,25 @@ from .common import (
     apply_boogu_text_cfg,
     boogu_timestep_from_scheduler,
     configure_boogu_sde_timesteps,
-    get_boogu_freqs_cis,
+    get_boogu_freqs_real,
+    lora_engine_module_names,
+    lora_module_name,
+    rename_boogu_lora_name,
+    unbindable_boogu_lora_module_names,
+    unwrappable_boogu_lora_module_names,
+    validate_boogu_lora_targets,
 )
 
 __all__ = ["BooguImagePipelineWithLogProb"]
+
+logger = logging.getLogger(__name__)
+
+#: The engine pins `VLLM_LOGGING_LEVEL=WARN`, so the INFO line vllm-omni prints for
+#: each loaded adapter is invisible in a training log. Report the binding outcome
+#: once per engine process at WARNING level instead: for a full run this is the only
+#: positive evidence that the actor's deltas reached the rollout, as opposed to being
+#: silently dropped by a name mismatch.
+_BIND_REPORT_EMITTED = False
 
 _BOOGU_POST_PROCESS_FACTORY = pipeline_boogu_image.get_boogu_image_post_process_func
 
@@ -65,6 +82,20 @@ def get_rollout_post_process_func(od_config):
 
 # vllm-omni resolves the built-in architecture's factory in the engine process.
 pipeline_boogu_image.get_boogu_image_post_process_func = get_rollout_post_process_func
+
+
+def _report_first_bind(module_count: int, target_count: int) -> None:
+    """Log the LoRA binding outcome once per engine process (see ``_BIND_REPORT_EMITTED``)."""
+    global _BIND_REPORT_EMITTED
+    if _BIND_REPORT_EMITTED:
+        return
+    _BIND_REPORT_EMITTED = True
+    logger.warning(
+        "Boogu-Image LoRA sync: bound %d actor delta modules to vllm-omni, 0 dropped "
+        "(%d wrapped target modules). Every pushed delta resolved to a live, wrapped module.",
+        module_count,
+        target_count,
+    )
 
 
 @VllmOmniPipelineBase.register("BooguImagePipeline", algorithm="flow_grpo")
@@ -116,24 +147,76 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
             local_files_only=local_files_only,
         )
 
-    # TODO: Remove after upgrading the vllm-omni pin to map live LoRA keys and targets
-    # natively for Boogu-Image (https://github.com/vllm-project/vllm-omni/issues/8001).
-    @staticmethod
-    def map_lora_update_to_engine(lora_tensors: dict, peft_config: dict) -> tuple[dict, dict]:
-        """Map diffusers output/joint-attention LoRA names to the native layout."""
-        tensors = {
-            name.replace("transformer.base_model.model.", "transformer.", 1)
-            .replace(".to_out.0.", ".to_out.")
-            .replace(".img_instruct_attn.processor.", ".img_instruct_attn."): tensor
-            for name, tensor in lora_tensors.items()
-        }
-        config = dict(peft_config)
-        targets = config.get("target_modules")
-        if isinstance(targets, list | tuple | set):
-            config["target_modules"] = [
-                target[:-2] if target == "to_out.0" or target.endswith(".to_out.0") else target for target in targets
-            ]
-        return tensors, config
+    # ------------------------------------------------------------------
+    # LoRA rollout sync
+    # ------------------------------------------------------------------
+
+    def map_lora_update_to_engine(
+        self,
+        tensors: dict[str, torch.Tensor],
+        peft_config: dict,
+    ) -> tuple[dict[str, torch.Tensor], dict]:
+        """Translate Boogu LoRA deltas to the vllm-omni transformer layout.
+        TODO (long): Remove this once vllm-omni natively supports syncing Boogu LoRA updates.
+
+        The actor exports PEFT names verbatim, so two families of targets arrive
+        spelled differently from this transformer:
+
+        * the attention output projection, which diffusers wraps in an
+          ``nn.Sequential`` (``...attn.to_out.0`` vs a direct ``...attn.to_out``), and
+        * the joint attention's per-stream projections, which the actor owns under
+          a custom attention processor (``...img_instruct_attn.processor.img_to_q``)
+          while this transformer holds them directly (``...img_instruct_attn.img_to_q``).
+
+        Both mismatches are invisible on their own: vllm-omni binds a delta by name
+        and only complains when *nothing* binds, so a partial miss drops deltas on
+        the rollout that the actor keeps training
+        (https://github.com/verl-project/verl-omni/issues/658). The rename table
+        below fixes the names, and the binding guard fails loudly if it ever misses
+        one.
+        """
+        mapped_config = dict(peft_config) if peft_config is not None else {}
+        mapped_config["target_modules"] = validate_boogu_lora_targets(mapped_config.get("target_modules"))
+
+        # Boogu's vllm-omni layout keeps every target as its own module, so only
+        # the naming changes -- no tensor is reshaped, fused or split.
+        mapped = {rename_boogu_lora_name(name): tensor for name, tensor in tensors.items()}
+        if len(mapped) != len(tensors):
+            raise ValueError(
+                "Boogu-Image LoRA name translation collapsed distinct tensors into one key; "
+                "refusing to sync an adapter whose deltas would be silently overwritten "
+                "(is the pushed state dict already partially renamed?)."
+            )
+
+        # A rename table is only as good as the engine key space it targets.
+        # vllm-omni binds a delta by name and stays quiet about the ones that match
+        # nothing, so a missed mismatch is invisible: resolve every mapped *LoRA*
+        # key against the live engine tree and fail here instead of sampling from a
+        # rollout that is missing part of the actor's update. Non-LoRA keys are
+        # excluded -- the manager cannot bind them either, so they are not a drop.
+        mapped_modules = [module for name in mapped if (module := lora_module_name(name)) != name]
+        unbindable = unbindable_boogu_lora_module_names(mapped_modules, lora_engine_module_names(self))
+        if unbindable:
+            raise ValueError(
+                "Boogu-Image LoRA deltas would bind no vllm-omni module and be silently dropped: "
+                f"{unbindable}. Extend `_BOOGU_LORA_NAME_RENAMES` in "
+                "verl_omni/pipelines/boogu_image_flow_grpo/common.py to translate them."
+            )
+
+        # A delta also has to land inside the layer set the manager actually
+        # wrapped: it registers LoRA layers only for modules matching
+        # `target_modules`, so a correctly-named key outside that set is dropped
+        # just as quietly as a mis-named one.
+        unwrappable = unwrappable_boogu_lora_module_names(mapped_modules, mapped_config["target_modules"])
+        if unwrappable:
+            raise ValueError(
+                "Boogu-Image LoRA deltas target modules vllm-omni would not wrap and would be "
+                f"silently dropped: {unwrappable}. Add them to the recipe's `target_modules` "
+                "and to `BOOGU_LORA_TARGETS`."
+            )
+
+        _report_first_bind(module_count=len(mapped_modules), target_count=len(mapped_config["target_modules"]))
+        return mapped, mapped_config
 
     # ------------------------------------------------------------------
     # Prompt encoding from pre-tokenised IDs
@@ -194,25 +277,35 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
         prompt_embeds_mask: torch.Tensor | None = None,
         max_sequence_length: int = 1280,
         condition_images: list | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode pre-tokenised prompt IDs into padded ``(B, L, D)`` embeddings.
-
-        Replaces the upstream text-based ``encode_prompt``; the agent loop ships
-        token IDs produced by the data preprocessor, whose chat template must
-        match the upstream Boogu system prompts exactly.
-        """
-        if prompt_embeds is None:
+        do_classifier_free_guidance: bool = True,
+        negative_prompt: str | list[str] | None = None,
+        device: torch.device | None = None,
+        negative_prompt_embeds: torch.Tensor | None = None,
+        prompt_attention_mask: torch.Tensor | None = None,
+        negative_prompt_attention_mask: torch.Tensor | None = None,
+        truncate_instruction_sequence: bool = False,
+        input_images: list[list[PIL.Image.Image] | None] | None = None,
+    ):
+        """Encode pre-tokenised prompt IDs (RL) or dispatch text prompts (warmup/dummy run)."""
+        if isinstance(prompt_ids, str | list) and (not prompt_ids or isinstance(prompt_ids[0], str)):
+            input_pil_images = (
+                [[img] if img is not None else None for img in condition_images] if condition_images else input_images
+            )
+            prompt_embeds, prompt_embeds_mask = self._get_instruction_feature_embeds(
+                instruction=prompt_ids,
+                input_pil_images=input_pil_images,
+                device=device or self.device,
+                max_sequence_length=max_sequence_length,
+                truncate_instruction_sequence=truncate_instruction_sequence,
+            )
+        elif prompt_embeds is None:
             prompt_embeds, prompt_embeds_mask = self._get_boogu_prompt_embeds(
                 prompt_ids, attention_mask, condition_images=condition_images
             )
-        return super().encode_prompt(
-            prompt_ids,
-            attention_mask,
-            num_images_per_prompt,
-            prompt_embeds,
-            prompt_embeds_mask,
-            max_sequence_length,
+        _, _, prompt_embeds, prompt_embeds_mask = self._reshape_embeds_and_mask(
+            prompt_embeds, prompt_embeds_mask, num_images_per_prompt
         )
+        return prompt_embeds, prompt_embeds_mask
 
     def _tokenize_text_prompt(self, text: str | list[str]) -> tuple[torch.Tensor, torch.Tensor]:
         """Tokenize raw text with the upstream chat template (dummy-run fallback)."""
@@ -536,11 +629,12 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
         ref_image_hidden_states = None
         condition_image_latents = None
         if has_reference:
+            ref_generators = [generator] if isinstance(generator, torch.Generator) else generator
             ref_image_hidden_states = self._build_ref_latents(
                 preprocessed_images,
                 num_images_per_prompt,
                 self.device,
-                generator,
+                ref_generators,
             )
             # Transport shape (B, C, H, W): one reference latent per output.
             condition_image_latents = torch.stack([sample_latents[0] for sample_latents in ref_image_hidden_states])
@@ -577,7 +671,7 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
             device=self.device,
         )
 
-        freqs_cis = get_boogu_freqs_cis(self.transformer.axes_dim_rope, self.transformer.axes_lens)
+        freqs_cis = get_boogu_freqs_real(self.transformer.axes_dim_rope, self.transformer.axes_lens)
 
         latents, all_latents, all_log_probs, all_timesteps = self.diffuse(
             prompt_embeds,

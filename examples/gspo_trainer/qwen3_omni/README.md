@@ -1,26 +1,28 @@
 # Qwen3-Omni Thinker GSPO recipes
 
-Last updated: 09/21/2026
+Last updated: 09/29/2026
 
 This directory contains both FSDP2 and Megatron recipes. For non-Megatron
 setup, data preparation and training instructions, see the
-[parent GSPO guide](../README.md). The launchers below contain each recipe's
+[parent GSPO guide](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/README.md). The launchers below contain each recipe's
 defaults and accept CLI overrides.
 
 | Recipe | Backend / platform | Launcher |
 | --- | --- | --- |
-| GSM8K LoRA | FSDP2 / GPU | [Thinker LoRA](run_qwen3_omni_thinker_gspo_lora_v1.sh) |
-| MMK12 LoRA | FSDP2 / GPU | [MMK12](run_qwen3_omni_thinker_gspo_lora_mmk12_v1.sh) |
-| MMK12 LoRA, separate-async | FSDP2 / GPU | [MMK12 separate-async](run_qwen3_omni_thinker_gspo_lora_mmk12_separate_async_v1.sh) |
-| MMK12 LoRA | FSDP2 / NPU | [MMK12 NPU](run_qwen3_omni_thinker_gspo_lora_mmk12_v1_npu.sh) |
-| MMK12 LoRA with on-policy distillation | FSDP2 / NPU | [MMK12 OPD](run_qwen3_omni_thinker_gspo_lora_mmk12_v1_opd_npu.sh) |
-| AVQA LoRA | FSDP2 / GPU | [AVQA LoRA](run_qwen3_omni_thinker_gspo_lora_avqa_v1.sh) |
-| AVQA full-parameter | FSDP2 / NPU | [AVQA NPU](run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh) |
-| NExT-QA full-parameter | FSDP2 / NPU | [NExT-QA NPU](run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh) |
-| AudioMCQ full-parameter, separate-async | Megatron / GPU | [AudioMCQ](run_qwen3_omni_megatron_audiomcq_separate_async.sh) |
+| GSM8K LoRA | FSDP2 / GPU | [Thinker LoRA](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_v1.sh) |
+| MMK12 LoRA | FSDP2 / GPU | [MMK12](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_v1.sh) |
+| MMK12 LoRA, separate-async | FSDP2 / GPU | [MMK12 separate-async](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_separate_async_v1.sh) |
+| MMK12 LoRA | FSDP2 / NPU | [MMK12 NPU](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_v1_npu.sh) |
+| MMK12 LoRA with on-policy distillation | FSDP2 / NPU | [MMK12 OPD](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_mmk12_v1_opd_npu.sh) |
+| AVQA LoRA | FSDP2 / GPU | [AVQA LoRA](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_avqa_v1.sh) |
+| AVQA full-parameter | FSDP2 / NPU | [AVQA NPU](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh) |
+| NExT-QA full-parameter | FSDP2 / NPU | [NExT-QA NPU](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh) |
+| AudioMCQ full-parameter, separate-async | Megatron / GPU | [AudioMCQ](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_audiomcq_separate_async.sh) |
+| AVQA image+audio full-parameter, separate-async | Megatron / GPU | [AVQA](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_avqa_separate_async.sh) |
+| Geo3K full-parameter, separate-async | Megatron / GPU | [Geo3K](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_geo3k_separate_async.sh) |
 
-The remaining sections describe the **Megatron AudioMCQ** recipe, its dependency
-prerequisites and validation limits. For model-adapter development, see the
+The following sections describe the **Megatron AudioMCQ**, **AVQA**, and **Geo3K** recipes,
+their dependency prerequisites and validation limits. For model-adapter development, see the
 [Megatron integration notes](../../../docs/contributing/integrating_an_omni_model.md#21-megatron-training-adapters).
 
 ## AudioMCQ with Megatron and V1 separate-async rollout
@@ -49,24 +51,19 @@ Use the repository's pinned verl/vLLM-Omni runtime and install the audio extra
 (`uv pip install -e '.[audio]'`). Megatron also requires a compatible Megatron-Core,
 Transformer Engine, and Megatron-Bridge with Qwen3-Omni audio forward/export
 support. The recipe selects `use_mbridge=true`, `vanilla_mbridge=false`.
-The development audio bridge is
-[`hbhflw2000/Megatron-Bridge@fe22f9d2`](https://github.com/hbhflw2000/Megatron-Bridge/commit/fe22f9d20bc32d3f09fd08dd58d9ad701d885d42),
-with Megatron-Core `e41b37002cd8df1cd97c93e3e0876cf0850f72f8`.
-With Transformers 5.13+, also apply the registration fix from upstream
-[Megatron-Bridge #4876](https://github.com/NVIDIA-NeMo/Megatron-Bridge/commit/039156328f9587ccb5a9c8c9e6adf30e63f2cf6a)
-to that older bridge revision; otherwise native ASR auto-registration collides
-while importing the bridge, before any Omni model is initialized.
-The same older bridge also calls an encoder method named
-`_get_feat_extract_output_lengths` when trimming audio features. Transformers 5
-moved it to the modeling module and changed its return value from a tuple to
-output lengths. The bridge must support that API (including the encoder's
-`n_window`) before training; successful checkpoint loading alone does not test
-this path. Keep this dependency fix in the bridge, not a global runtime patch
-in verl-omni. A tested bridge revision with both compatibility fixes is required
-before publishing the recipe as reproducible with Transformers 5.
-These are external prerequisites, not implementations vendored by this recipe;
-install them into the same environment as verl. Native Transformer Engine and
-FlashAttention extensions must be built for that environment's PyTorch version.
+Upstream Megatron-Bridge already includes Qwen3-Omni Thinker conversion,
+audio-input forwarding, and checkpoint import/export from
+[#3317](https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/3317). Its main
+branch also has the Transformers 5 registration fix from
+[#4876](https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/4876) and computes
+audio feature lengths with the current `n_window`-aware formula for this
+recipe's one-audio-per-row inputs. Release
+`v0.6.2` still uses the older audio encoder length method, so select and test
+a Bridge/Megatron-Core revision with the current audio-length behavior before
+claiming clean-checkout reproduction. The H200 acceptance run used a development
+Bridge/Megatron-Core pair; its success does not validate the repository's
+current public pins. Native Transformer Engine and FlashAttention extensions
+must be built for that environment's PyTorch version.
 
 The full-model TransferQueue path also needs the equal-length 3D position-ID
 layout repair tracked by [verl #7901](https://github.com/verl-project/verl/pull/7901).
@@ -85,10 +82,9 @@ following dependency work must land before this PR can be treated as runnable
 from a clean checkout:
 
 1. `verl-project/verl` must replace its `megatron-bridge==0.5.2` and paired
-   Megatron-Core pins with a tested upstream pair that supports Qwen3-Omni
-   Thinker conversion, audio forward/export, Transformers 5 registration, and
-   the current audio-length API. Then this repository must bump
-   `.github/verl_pin.txt` to that verl revision.
+   Megatron-Core pins with a tested upstream pair that includes the already
+   upstream Qwen3-Omni support and current audio-length handling. Then this
+   repository must bump `.github/verl_pin.txt` to that verl revision.
 2. verl #7901, or an equivalent replacement for closed verl #7767, must land
    with regression coverage for equal-length multimodal position IDs, followed
    by the same verl pin bump here.
@@ -188,3 +184,153 @@ disabled. The old development `fully_async_policy` run does not validate these
 V1 lifecycle paths or Decoupled PPO (`bypass_mode=false`). A successful toy smoke
 establishes structural coverage, not full-model learning or TP4 numerical
 parity; evaluate the need for a new full-model run after reviewing the changes.
+
+## AVQA image+audio full-parameter Megatron separate-async
+
+This [AVQA launcher](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_avqa_separate_async.sh) trains the
+Qwen3-Omni Thinker language model on real image and audio inputs, with its
+vision and audio towers frozen. It uses GRPO advantages, GSPO sequence clipping,
+the repository's exact `choice_reward.py` scorer, and the V1 separate-async
+actor/rollout path. The launcher reuses `omni_megatron_trainer.yaml` with AVQA, model and topology
+overrides; it does not invoke another task launcher. It does **not** train the Talker or provide a
+video-training recipe.
+
+Convert the official AVQA-R1 archive with the existing
+[AVQA converter](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/data_process/avqa.py). The published AVQA-R1 split used in
+our validation contained media bytes shared across train and validation; its
+`problem_id` also restarts in each split. Make a separate strict training
+parquet by excluding every training row whose image **or** audio SHA256 occurs
+in validation. Keep the original train and validation files unchanged:
+
+```bash
+python examples/gspo_trainer/data_process/avqa.py \
+  --input_dir /data/avqa_r1 \
+  --output_dir /data/avqa_r1_verl
+python examples/gspo_trainer/data_process/avqa_strict.py \
+  --train_file /data/avqa_r1_verl/train.parquet \
+  --validation_file /data/avqa_r1_verl/validation.parquet \
+  --output_file /data/avqa_r1_verl/train_strict.parquet \
+  --audit_file /data/avqa_r1_verl/strict-audit.json
+```
+
+The source archive used for the H200 run yielded 4,491 original training rows,
+1,911 validation rows and 4,435 strict training rows after 56 exclusions.
+These counts are properties of that archive, not hard-coded converter limits.
+The parquet files contain absolute media paths; make them accessible at the
+same paths to every worker. Audit processor lengths on real image+audio inputs
+before increasing the prompt limit or changing the media policy.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+MODEL_PATH=/models/Qwen3-Omni-30B-A3B-Instruct \
+TRAIN_FILE=/data/avqa_r1_verl/train_strict.parquet \
+VAL_FILE=/data/avqa_r1_verl/validation.parquet \
+OUTPUT_DIR=/outputs/avqa \
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_avqa_separate_async.sh
+```
+
+The default single-node layout uses four Megatron actor GPUs (TP4/EP4) and
+four rollout GPUs (TP4), 4,096 prompt tokens, 2,048 response tokens, and 16
+prompts with eight responses. Training defaults to 150 optimizer updates and
+complete validation every 30 updates. The actor uses a precision-aware
+optimizer with 100% CPU FP32 master-parameter offload to reduce GPU memory
+requirements; allow sufficient host RAM. The recipe saves **no checkpoints**
+and retains its resolved configuration, command, TensorBoard events, log and
+generations in one unique run directory.
+
+`NUM_GPUS=6 ROLLOUT_GPUS=2 ROLLOUT_TP=2` selects a six-GPU layout. Extra Hydra
+arguments override the recipe settings. Ray CPU count and object-store size
+are not fixed by the launcher; set them for the allocated host when needed,
+for example `ray_kwargs.ray_init.num_cpus=32` and
+`+ray_kwargs.ray_init.object_store_memory=17179869184`. Communication-library
+settings belong to the deployment environment rather than this recipe.
+Review the resolved configuration after applying overrides.
+
+### Validation and dependencies
+
+The current launcher completed 10 optimizer updates on eight H200 GPUs
+(4 actor + 4 rollout, rollout TP4), with full 1,911-question validation at
+steps 0 and 10. Correct answers increased from 1,454 to 1,544; strict
+single-choice answer formatting increased from 1,806 to 1,899. Official
+reward regrading found zero mismatches, and the run exited with code 0.
+Loss, gradient norm, entropy, rollout-correction KL and train/rollout
+Pearson remained finite. This short run validates the launcher changes;
+it does not establish long-run convergence or a backend speedup.
+
+The standalone launcher at `a21bc851` completed 30 optimizer updates on six
+H200 GPUs with full 1,911-question validation at steps 0 and 30. Correct
+answers increased from 1,368 to 1,543 and parseable answers from 1,715 to
+1,902; official reward regrading found no mismatches. Logged loss, gradient
+norm, entropy, rollout-correction KL and train/rollout Pearson were finite.
+The run was intentionally stopped after the completed step-30 validation.
+
+An earlier entry point completed 150 updates and six full validations on
+eight H200 GPUs: correct answers increased from 1,446 to 1,642. Its
+TensorBoard curves are supporting evidence, not a GPU test of every later
+launcher revision. Improved formatting contributes to the reward gain;
+these results alone do not establish improved reasoning. Compare aggregate
+validation scores, since generations do not have stable cross-step IDs.
+
+These development runs used Megatron compatibility dependencies described
+above. The latest 10-update validation exercised the upstream CPU-snapshot
+function with its pin_memory calls intact; that tested configuration did
+not require the local snapshot change used by earlier runs. No snapshot
+patch is included in this recipe. Reproduction with the repository's
+complete set of unmodified dependency pins remains unverified.
+
+Focused CPU checks:
+
+```bash
+python -m pytest -q tests/utils/test_avqa_data_process_on_cpu.py \
+  tests/utils/reward_score/test_choice_reward_on_cpu.py \
+  tests/utils/test_avqa_strict_on_cpu.py \
+  tests/trainer/omni/test_avqa_megatron_config_on_cpu.py
+```
+
+## Geo3K image-conditioned Megatron separate-async
+
+The [standalone Geo3K launcher](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_geo3k_separate_async.sh)
+reuses `verl_omni/trainer/config/omni_megatron_trainer.yaml` and the existing
+Qwen3-Omni Megatron adapter. It trains the Thinker language model with frozen
+vision/audio towers. The dependency prerequisites and BSHD/PP1/CP1 limitations
+in the AudioMCQ section also apply.
+
+Prepare [Geometry3K](https://huggingface.co/datasets/hiyouga/geometry3k) with the
+converter below. Check the dataset card and original Geometry3K license before
+use. The converter preserves encoded image bytes and source question whitespace,
+validates image-placeholder counts, and records the original split and row index.
+It explicitly requests `<think>...</think>\boxed{...}`, as consumed by verl's
+built-in `hiyouga/geometry3k` reward (90% answer accuracy, 10% strict format).
+
+```bash
+python examples/gspo_trainer/data_process/geo3k.py --local_save_dir /data/geo3k
+MODEL_PATH=/models/Qwen3-Omni-30B-A3B-Instruct \
+TRAIN_FILE=/data/geo3k/train.parquet VAL_FILE=/data/geo3k/test.parquet \
+OUTPUT_DIR=/outputs/geo3k \
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_geo3k_separate_async.sh
+```
+
+Defaults use eight GPUs: four TP4/EP4 actor GPUs and four TP4 rollout GPUs,
+GRPO advantages with GSPO clipping (`0.0003`/`0.0004`), LR `1e-6`, and 16 prompts
+with 8 samples each. Prompt/response limits are 1024/3072 tokens; old-policy and
+actor microbatches are both one. Dynamic batching, remove padding, reference KL
+and LR warmup are disabled. Precision-aware optimization offloads FP32 optimizer
+states to CPU; the trajectory-lag threshold is one. The launcher requests 150
+updates, full validation before training and every 10 updates, and no checkpoints.
+Each launch retains its command, resolved configuration, TensorBoard, log and
+generations in a unique directory. CLI overrides remain last; preprocessing
+requires `--overwrite` to replace existing parquet files.
+
+An eight-H800 development run completed 129 optimizer updates before a user-requested
+stop (exit `-15`). Full 601-question validation ran at steps 0/30/60/90/120.
+Validation reward increased from `0.614309` to `0.679035`: correct answers rose
+from 361 to 393 and strict-format answers from 443 to 544. Official reward
+regrading had zero mismatches. The English-only figure shows unsmoothed validation
+reward (90% answer accuracy, 10% strict format) and its two components.
+
+![H800 Geo3K validation reward and answer/format accuracy](https://raw.githubusercontent.com/hbhflw2000/verl-omni/41d2d43f06ec100ec95be88e7f664ba901901987/docs/evidence/geo3k/lag1-val-core-final-english-20261001.png)
+
+See the [full TensorBoard metrics](https://raw.githubusercontent.com/hbhflw2000/verl-omni/41d2d43f06ec100ec95be88e7f664ba901901987/docs/evidence/geo3k/lag1-tb-matrix-final-english-20261001.png)
+for training-batch reward and other diagnostics. This run used an earlier entry
+point, development dependencies and recorded overrides; it does not establish
+exact-head reproduction of the final launcher with unchanged public pins.
