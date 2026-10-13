@@ -1731,7 +1731,7 @@ class CompositeFSDPEngine(BaseEngine):
 
     @property
     def is_optimizer_offload_enabled(self) -> bool:
-        return self.current_engine.is_optimizer_offload_enabled()
+        return self.current_engine.is_optimizer_offload_enabled
 
     def train_mode(self, **kwargs):
         return _CompositeEngineCtx(self, mode="train", **kwargs)
