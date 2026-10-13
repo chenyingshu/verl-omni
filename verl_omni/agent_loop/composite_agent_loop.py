@@ -199,7 +199,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             dit_global_indices = None
             if global_indices is not None:
                 ar_global_indices = np.asarray(global_indices, dtype=np.int64).reshape(-1)
-                dit_global_indices = np.repeat(ar_global_indices, diffusion_n)
+                dit_global_indices = (ar_global_indices[:, None] * diffusion_n + np.arange(diffusion_n)).reshape(-1)
             per_rollout_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch) * diffusion_n, dit_global_indices)
             ar_seeds = maybe_per_rollout_seeds(batch.meta_info, len(batch), ar_global_indices)
 
@@ -504,19 +504,7 @@ class CompositeAgentLoopManager(AgentLoopManager):
         llm_client: LLMServerClient,
         teacher_client: dict[str, LLMServerClient] | None = None,
         reward_loop_worker_handles: list[ray.actor.ActorHandle] | None = None,
-        allow_without_composite_trainer: bool = False,
     ):
-        # Tuple ``(ar_batch, diffusion_batch)`` is not wired into
-        # ``ray_diffusion_trainer`` yet (dies at ``gen_batch_output.meta_info``).
-        # Block config-reachable construction until the 3/N composite trainer lands.
-        if not allow_without_composite_trainer:
-            raise NotImplementedError(
-                "CompositeAgentLoopManager returns (ar_batch, diffusion_batch) and requires "
-                "the composite trainer; ray_diffusion_trainer still expects a single "
-                "DataProto. Do not set actor_rollout_ref.rollout.agent.agent_loop_manager_class "
-                "to this class until that trainer ships. Smoke tests may pass "
-                "allow_without_composite_trainer=True."
-            )
         self.agent_loop_workers_class = ray.remote(CompositeAgentLoopWorker)
         super().__init__(config, llm_client, teacher_client, reward_loop_worker_handles)
 

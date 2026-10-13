@@ -158,6 +158,7 @@ def init_config() -> DictConfig:
         # Keep the 2-GPU TP smoke light; CI EOFError on worker launch is usually OOM.
         # Keep enough inference steps for sde_window_range=[0, 5] / sde_window_size=2.
         config.actor_rollout_ref.rollout.n = 2  # dit samples per AR row
+        config.actor_rollout_ref.rollout.m = 2  # ar part
         config.actor_rollout_ref.rollout.pipeline.height = 256
         config.actor_rollout_ref.rollout.pipeline.width = 256
         config.actor_rollout_ref.rollout.pipeline.num_inference_steps = 10
@@ -223,7 +224,6 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             config=init_config,
             llm_client=llm_server_manager.get_client(),
             reward_loop_worker_handles=[dit_reward_handle] if agent_reward_loop else None,
-            allow_without_composite_trainer=True,
         )
 
         system_prompt = (
@@ -262,15 +262,13 @@ def test_single_turn(init_config, agent_reward_loop: bool):
             },
         )
         batch.meta_info["global_steps"] = 0
-        # Trainer-side AR expansion is deferred; smoke-test the worker with a local
-        # pre-repeat so one prompt yields multiple AR rows (then n DiT images each).
-        ar_repeat = 2
+        ar_n = init_config.actor_rollout_ref.rollout.m
         diffusion_n = init_config.actor_rollout_ref.rollout.n
-        batch = batch.repeat(ar_repeat)
+        batch = batch.repeat(ar_n)
 
         ar_result, diffusion_result = agent_loop_manager.generate_sequences(prompts=batch)
-        ar_batch_size = len(raw_prompts) * ar_repeat
-        diffusion_batch_size = len(raw_prompts) * ar_repeat * diffusion_n
+        ar_batch_size = len(raw_prompts) * ar_n
+        diffusion_batch_size = len(raw_prompts) * ar_n * diffusion_n
         assert len(ar_result) == ar_batch_size
         assert len(diffusion_result) == diffusion_batch_size
 
