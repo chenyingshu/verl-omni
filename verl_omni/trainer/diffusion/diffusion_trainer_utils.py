@@ -13,6 +13,7 @@
 # limitations under the License.
 """Shared helpers for diffusion Ray trainers."""
 
+import math
 from collections.abc import Sequence
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ def _to_diffusion_worker_tensordict(batch: DataProto):
 
 OLD_POLICY_DECAY_SCHEDULES = {
     "copy": (0, 0.0, 0.0),
+    "linear_to_0_3": (0, 0.001, 0.3),
     "linear_to_0_5": (0, 0.001, 0.5),
     "delayed_linear_to_0_999": (75, 0.0075, 0.999),
 }
@@ -40,7 +42,8 @@ def old_policy_decay(step: int, schedule: str) -> float:
     The decay is used as ``old <- decay * old + (1 - decay) * current`` when refreshing
     the rollout adapter. The schedules mirror the reference DiffusionNFT ``return_decay``
     helper: ``copy`` hard-copies the current adapter, ``linear_to_0_5`` ramps from 0 to
-    0.5, and ``delayed_linear_to_0_999`` waits 75 steps before ramping to 0.999.
+    0.5 (``linear_to_0_3``, the DGPO reference EMA, stops at 0.3), and
+    ``delayed_linear_to_0_999`` waits 75 steps before ramping to 0.999.
     """
     if schedule in OLD_POLICY_DECAY_SCHEDULES:
         warmup_steps, ramp_rate, max_decay = OLD_POLICY_DECAY_SCHEDULES[schedule]
@@ -64,6 +67,13 @@ def worker_group_port_ranges(master_port_range: Optional[Sequence[int]], num_gro
             f"trainer.ray_master_port_range={master_port_range} has fewer ports than worker groups ({num_groups})."
         )
     return [[lo + i * stride, hi if i == num_groups - 1 else lo + (i + 1) * stride] for i in range(num_groups)]
+
+
+def track_nonfinite_grad_streak(streak: int, grad_norm: Optional[float]) -> int:
+    """Update the consecutive-non-finite-gradient streak, for visibility only (see #388 item A3)."""
+    if grad_norm is None or math.isfinite(grad_norm):
+        return 0
+    return streak + 1
 
 
 def validate_distillation_config(config) -> None:
