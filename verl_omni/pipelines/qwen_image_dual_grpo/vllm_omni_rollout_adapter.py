@@ -95,7 +95,7 @@ def extract_prompt(texts: list[str]) -> list[str]:
         if m:
             refined_prompt = m.group(1).strip()
         else:
-            logger.warning(f"Revised Prompt: regex missed; feeding full CoT into DiT ={text!r}.")
+            logger.warning("Revised Prompt: regex missed; feeding full CoT into DiT.")
             refined_prompt = text.strip()
         refined_prompts.append(refined_prompt)
     return refined_prompts
@@ -239,7 +239,7 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             response_id=ar_response_ids, eos_token=self.tokenizer.eos_token_id, dtype=attention_mask.dtype
         )  # B*num_responses_per_prompt x seq_len
         if ar_all_log_probs is not None:
-            ar_all_log_probs = ar_all_log_probs = torch.where(response_mask.bool(), ar_all_log_probs, torch.zeros_like(ar_all_log_probs))
+            ar_all_log_probs = torch.where(response_mask.bool(), ar_all_log_probs, torch.zeros_like(ar_all_log_probs))
 
         return TextEncoderGenerationResult(
             ar_response_ids=ar_response_ids,
