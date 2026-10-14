@@ -156,9 +156,7 @@ async def _score_single_image(
     axis_scores = _parse_unified_reward_scores(unified_reward_response)
     if not axis_scores:
         logger.warning(
-            "UnifiedReward failed to parse response for caption %r: %s",
-            caption,
-            unified_reward_response,
+            "UnifiedReward failed to parse response",
         )
         return None
     normalized_score, raw_score = _aggregate_unified_reward_scores(axis_scores)
