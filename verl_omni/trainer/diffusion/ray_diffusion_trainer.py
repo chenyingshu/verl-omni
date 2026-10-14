@@ -1374,7 +1374,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
             all_reward_keys = list(batch_reward.meta_info["reward_extra_keys"])
             reward_extra_keys = ["reward/ar"]
             for key in all_reward_keys:
-                if "reward/ar" in key:
+                if key.startswith("reward/ar/"):
                     sub_scores = batch_reward.non_tensor_batch.pop(key)
                     if sub_scores.ndim == 1:
                         sub_scores = sub_scores.reshape(-1, 1)
