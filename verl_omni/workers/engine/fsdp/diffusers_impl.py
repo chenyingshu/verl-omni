@@ -901,7 +901,7 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
             latents = data.get("all_latents", None)
             if not isinstance(latents, torch.Tensor) or latents.ndim != 4 or latents.shape[1] != num_steps + 1:
                 raise ValueError("Staged PPO all_latents must have shape (batch, timesteps + 1, tokens, channels).")
-            required = ("all_timesteps", "all_latents", "old_log_probs", "advantages", "prompt_embeds")
+            required = ("all_timesteps", "all_latents", "advantages", "prompt_embeds")
             step_fields = dict.fromkeys(
                 (
                     "all_timesteps",
@@ -1203,8 +1203,9 @@ class PPODiffusersFSDPEngine(DiffusersFSDPEngine):
         if loss_function is not None:
             data = tu.get_tensordict(
                 {
-                    "old_log_probs": micro_batch["old_log_probs"][:, step],
-                    "advantages": micro_batch["advantages"][:, step],
+                    key: micro_batch[key][:, step]
+                    for key in ("old_log_probs", "advantages")
+                    if micro_batch.get(key, None) is not None
                 },
             )
             tu.assign_non_tensor(
