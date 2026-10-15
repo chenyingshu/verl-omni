@@ -114,8 +114,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
     tokens from the Qwen2.5-VL text encoder before image diffusion.
     The pipeline returns:
 
-    * DiT trajectory log-probabilities (``all_log_probs``) from the SDE window, and others.
-    * Text-encoder token log-probabilities (``ar_all_log_probs``) for the generated text, and others.
+    * DiT trajectory fields plus named ``image_preview`` / ``image_latent`` artifacts.
+    * AR token ids, masks, and log-probabilities in rollout ``rl`` metadata, with no media payload.
     * The decoded text (``text_encoder_responses``).
     """
 
@@ -290,7 +290,8 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
 
         AR text generation:
         Autoregressively samples tokens from the text encoder.
-        Returns the all generated token ids, per-token log-probabilities, and the decoded response text.
+        Returns token ids, per-token log-probabilities, and the decoded response text
+        in rollout metadata, with an empty media payload.
 
         Diffusion image generation:
         Encodes the prompt, prepares latents, runs the SDE diffusion loop via
@@ -365,15 +366,20 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
                 for e in refined_prompts
             ]
 
-            image = torch.zeros((1, 3, 1, 1), device=self.device).float()  # dummy image
-            result = rollout_output(
-                media=image,
-                rl={
-                    "ar_response_ids": _token_rows_to_lists(response.ar_response_ids),
-                    "ar_response_mask": _token_rows_to_lists(response.ar_response_mask),
-                    "ar_all_log_probs": response.ar_log_probs,
-                    "refined_prompt": messages,  # formatted prompt
-                    "text_encoder_responses": response.text_encoder_responses,  # CoT + prompt
+            # Token stage only. An empty payload keeps the engine from treating this
+            # call as an image; ``rl`` carries the AR tensors for the strategy.
+            result = DiffusionOutput(
+                output={
+                    "payload": {},
+                    "metadata": {
+                        "rl": {
+                            "ar_response_ids": _token_rows_to_lists(response.ar_response_ids),
+                            "ar_response_mask": _token_rows_to_lists(response.ar_response_mask),
+                            "ar_all_log_probs": response.ar_log_probs,
+                            "refined_prompt": messages,  # formatted prompt
+                            "text_encoder_responses": response.text_encoder_responses,  # CoT + prompt
+                        }
+                    },
                 },
                 to_cpu=True,
             )
