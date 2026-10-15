@@ -57,8 +57,10 @@ from verl.workers.rollout.llm_server import LLMServerManager
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
 from verl_omni.pipelines.rollout_media import (
+    previews_from_batch,
     resolve_batch_media_kind,
     resolve_is_video,
+    validate_previews,
     validate_visual_media_batch_rank,
 )
 from verl_omni.trainer.config import DiffusionAlgoConfig
@@ -78,9 +80,9 @@ from verl_omni.trainer.diffusion.diffusion_trainer_utils import (
     NoOpCheckpointManager,
     _to_diffusion_worker_tensordict,
     old_policy_decay,
+    skip_old_log_prob,
     track_nonfinite_grad_streak,
     validate_distillation_config,
-    worker_group_port_ranges,
 )
 from verl_omni.trainer.diffusion.rollout_correction import (
     apply_bypass_mode_to_diffusion_batch,
@@ -89,11 +91,13 @@ from verl_omni.trainer.diffusion.rollout_correction import (
     rollout_correction_enabled,
 )
 from verl_omni.trainer.diffusion.teacher_manager import DiffusionTeacherManager
+from verl_omni.utils.net_utils import worker_group_port_ranges
 from verl_omni.utils.tracking import (
     _export_video,
     batch_items,
     log_ar_generations_to_wandb,
     log_wandb_media,
+    validate_audio_batch,
     wrap_val_samples_for_wandb,
 )
 from verl_omni.workers.config.reward import reward_is_enabled, reward_role_required, streaming_reward_enabled
@@ -248,30 +252,39 @@ def dump_generations(
     audios=None,
     audio_sample_rates=None,
     media_kind=None,
+    previews=None,
 ):
     """Dump samples to disk as media files plus a JSONL index.
 
-    ``outputs`` is a batch of images ``[N, C, H, W]`` (-> ``{i}.jpg``) or videos
+    Named decoded ``previews`` take precedence over ``outputs``. Legacy ``outputs``
+    is a batch of images ``[N, C, H, W]`` (-> ``{i}.jpg``) or videos
     ``[N, T, C, H, W]`` (-> ``{i}.mp4`` at ``fps``). ``max_samples`` caps how many
     are written (``None`` = all). Optional generated audio is muxed into video files.
     Failed video exports are preserved as ``{i}.pt`` fallback payloads when possible.
     Media failures are recorded in JSONL; filesystem failures warn and skip the dump.
     """
-    _validate_generation_outputs(outputs)
+    previews = validate_previews(previews, len(inputs))
+    if previews == []:
+        return
+    if previews is not None:
+        # Previews are already validated and normalized; stacking them would abort the
+        # dump when one sample's resolution or frame count differs from another's.
+        batch_ndim = previews[0].data.ndim + 1
+        media_kind = previews[0].spec.modality
+        n_full = len(previews)
+    else:
+        _validate_generation_outputs(outputs)
+        batch_ndim = outputs.ndim
+        n_full = outputs.shape[0]
     visual_folder = os.path.join(dump_path, f"{global_steps}")
 
-    n_full = outputs.shape[0]
     n = n_full if max_samples is None else min(max_samples, n_full)
-    if outputs.ndim == 6:
-        # Per-sample batch dim from single-seq rollouts: [N, 1, T, C, H, W].
-        outputs = outputs.squeeze(1)
     # Prefer the adapter-declared media kind over legacy rank/layout inference.
-    validate_visual_media_batch_rank(outputs.ndim, media_kind)
-    is_video = resolve_is_video(outputs.ndim, media_kind)
-    if is_video and outputs.ndim == 5 and outputs.shape[1] == 3 and outputs.shape[2] != 3:
-        # Channels-first [N, C, T, H, W] -> [N, T, C, H, W]. Layout normalization
-        # is still heuristic; declaring/normalizing it is deferred to the layout PR.
-        outputs = outputs.permute(0, 2, 1, 3, 4)
+    validate_visual_media_batch_rank(batch_ndim, media_kind)
+    is_video = resolve_is_video(media_kind)
+
+    if is_video:
+        audios, audio_sample_rates = validate_audio_batch(audios, audio_sample_rates, n_full, context="generation dump")
 
     try:
         os.makedirs(visual_folder, exist_ok=True)
@@ -284,13 +297,11 @@ def dump_generations(
     video_export_errors = [None] * n
     image_export_errors = [None] * n
     if is_video:
-        audios = batch_items(audios, n_full, "audio")
-        audio_sample_rates = batch_items(audio_sample_rates, n_full, "audio_sample_rate")
         for i in range(n):
             video_path = os.path.join(visual_folder, f"{i}.mp4")
             try:
                 _export_video(
-                    outputs[i],
+                    previews[i] if previews is not None else outputs[i],
                     video_path,
                     fps=fps,
                     audio=audios[i],
@@ -303,7 +314,7 @@ def dump_generations(
                 if isinstance(fallback_audio, torch.Tensor):
                     fallback_audio = fallback_audio.detach().cpu()
                 fallback = {
-                    "video": outputs[i].detach().cpu(),
+                    "video": (previews[i].data if previews is not None else outputs[i]).detach().cpu(),
                     "audio": fallback_audio,
                     "audio_sample_rate": audio_sample_rates[i],
                 }
@@ -327,12 +338,14 @@ def dump_generations(
             else:
                 output_paths.append(video_path)
     else:
-        images_pil = outputs[:n].cpu().permute(0, 2, 3, 1).numpy()
-        for i, image in enumerate(images_pil):
+        for i in range(n):
             image_path = os.path.join(visual_folder, f"{i}.jpg")
             try:
-                Image.fromarray(image).save(image_path)
-            except (OSError, ValueError) as error:
+                pixels = previews[i].data if previews is not None else outputs[i]
+                image = pixels.detach().cpu().permute(1, 2, 0).numpy()
+                image = Image.fromarray(image.squeeze(-1) if image.shape[-1] == 1 else image)
+                image.convert("RGB").save(image_path)
+            except (OSError, TypeError, ValueError, RuntimeError) as error:
                 image_export_errors[i] = f"{type(error).__name__}: {error}"
                 sys_logger.warning("Failed to export rollout image at step %s sample %s: %s", global_steps, i, error)
                 output_paths.append(None)
@@ -457,6 +470,9 @@ class BaseRayDiffusionTrainer(ABC):
         self.use_teacher_policy = is_distillation_enabled(config.get("distillation"))
         self.distillation_config = omega_conf_to_dataclass(config.distillation) if self.use_teacher_policy else None
         validate_distillation_config(config)
+        self.skip_old_log_prob = skip_old_log_prob(config)
+        if self.skip_old_log_prob:
+            sys_logger.info("The actor loss reads no log-probs; skipping the old_log_prob stage.")
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
@@ -573,6 +589,7 @@ class BaseRayDiffusionTrainer(ABC):
         audios=None,
         audio_sample_rates=None,
         media_kind=None,
+        previews=None,
     ):
         """Dump media with the shared exporter at the current training step."""
         return dump_generations(
@@ -588,6 +605,7 @@ class BaseRayDiffusionTrainer(ABC):
             audios=audios,
             audio_sample_rates=audio_sample_rates,
             media_kind=media_kind,
+            previews=previews,
         )
 
     def _log_rollout_data(
@@ -633,6 +651,7 @@ class BaseRayDiffusionTrainer(ABC):
                 audios=audios_to_dump,
                 audio_sample_rates=audio_rates_to_dump,
                 media_kind=media_kind,
+                previews=previews_from_batch(batch),
             )
 
     def _maybe_log_val_generations(
@@ -643,6 +662,7 @@ class BaseRayDiffusionTrainer(ABC):
         audios=None,
         audio_sample_rates=None,
         media_kinds=None,
+        previews=None,
         ar_inputs=None,
         ar_outputs=None,
         ar_scores=None,
@@ -653,7 +673,14 @@ class BaseRayDiffusionTrainer(ABC):
 
         if generations_to_log == 0 or len(inputs) == 0:
             return
-        _validate_generation_outputs(outputs)
+        previews = validate_previews(previews, len(inputs))
+        if previews == []:
+            return
+        if previews is not None:
+            outputs = previews
+            media_kinds = [preview.spec.modality for preview in previews]
+        else:
+            _validate_generation_outputs(outputs)
 
         import shutil
 
@@ -689,7 +716,10 @@ class BaseRayDiffusionTrainer(ABC):
                 media_kinds=[sample[5] for sample in samples],
             )
         else:
-            samples = [(input_, output, score) for input_, output, score, *_ in samples]
+            samples = [
+                (input_, output.data if previews is not None else output, score)
+                for input_, output, score, *_ in samples
+            ]
 
         # Log to each configured logger
         try:
@@ -767,6 +797,7 @@ class BaseRayDiffusionTrainer(ABC):
         sample_audios = []
         sample_audio_sample_rates = []
         sample_media_kinds = []
+        sample_previews = []
         sample_gts = []
         sample_scores = []
         sample_turns = []
@@ -851,6 +882,7 @@ class BaseRayDiffusionTrainer(ABC):
             # Store generated outputs
             output_images = test_output_gen_batch.batch["responses"]
             sample_outputs.append(output_images)
+            sample_previews.extend(previews_from_batch(test_output_gen_batch) or [None] * len(output_images))
             tool_extra = test_output_gen_batch.non_tensor_batch.get("tool_extra_fields")
             sample_audios.extend(_resolve_rollout_media_field(test_output_gen_batch, tool_extra, "audio"))
             sample_audio_sample_rates.extend(
@@ -935,6 +967,7 @@ class BaseRayDiffusionTrainer(ABC):
             audios=sample_audios,
             audio_sample_rates=sample_audio_sample_rates,
             media_kinds=sample_media_kinds,
+            previews=sample_previews,
             ar_inputs=ar_sample_inputs,
             ar_outputs=ar_sample_outputs,
             ar_scores=ar_sample_scores,
@@ -954,6 +987,7 @@ class BaseRayDiffusionTrainer(ABC):
                 audios=sample_audios,
                 audio_sample_rates=sample_audio_sample_rates,
                 media_kind=resolve_batch_media_kind(sample_media_kinds),
+                previews=sample_previews,
             )
             if self.train_ar_n_diffusion:
                 self._dump_ar_generations(
@@ -1753,7 +1787,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                         if self.train_ar_n_diffusion:
                             ar_batch.batch["old_log_probs"] = ar_batch.batch["rollout_ar_log_probs"]
                         apply_bypass_mode_to_diffusion_batch(batch)
-                    else:  # Recompute old_log_probs
+                    elif not self.skip_old_log_prob:  # Recompute old_log_probs
                         with marked_timer("old_log_prob", timing_raw, color="blue"):
                             if self.train_ar_n_diffusion:
                                 # AR part
@@ -1806,7 +1840,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
-                        num_timesteps = batch.batch["old_log_probs"].shape[1]
+                        num_timesteps = batch.batch["all_timesteps"].shape[1]
                         batch.batch["sample_level_rewards"] = batch.batch["sample_level_scores"].expand(
                             -1, num_timesteps
                         )

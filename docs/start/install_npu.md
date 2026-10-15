@@ -1,6 +1,6 @@
 # Installation (NPU)
 
-Last updated: 09/24/2026
+Last updated: 10/14/2026
 
 For NVIDIA GPU, see the {doc}`GPU installation guide <install>`. For AMD GPU, see the {doc}`ROCm installation guide <install_rocm>`.
 
@@ -10,6 +10,9 @@ For NVIDIA GPU, see the {doc}`GPU installation guide <install>`. For AMD GPU, se
 * **CANN**: Version == 9.1.0
 
 ## Install
+
+These instructions target Ascend A2/910B and A3. Atlas 300I DUO and Atlas 200I Pro
+are not supported by this installation recipe because they do not use Triton-Ascend.
 
 ```bash
 git clone https://github.com/verl-project/verl-omni.git
@@ -23,30 +26,57 @@ uv venv --python 3.12 --seed
 source .venv/bin/activate
 ```
 
-2. Install the platform backend
+2. Install PyTorch
+
+Install the CPU build first; otherwise later steps pull the CUDA build of `torch` from PyPI.
 
 ```bash
-uv pip install vllm==0.30.0
-uv pip install "vllm-ascend @ git+https://github.com/vllm-project/vllm-ascend.git@$(cat .github/vllm_ascend_pin.txt)"
+uv pip install --force-reinstall \
+    torch==2.10.0+cpu torchvision==0.25.0+cpu torchaudio==2.10.0+cpu \
+    --extra-index-url https://download.pytorch.org/whl/cpu/ \
+    --index-strategy unsafe-best-match
+uv pip install --force-reinstall torch-npu==2.10.0.post4 \
+    --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
+    --extra-index-url https://download.pytorch.org/whl/cpu/ \
+    --index-strategy unsafe-best-match
 ```
 
-3. Install vLLM-Omni and VeRL-Omni
+3. Install vLLM and vLLM-Ascend
 
 ```bash
-uv pip install "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@$(cat .github/vllm_omni_pin.txt)"
+source ${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh
+source ${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/../nnal/atb/set_env.sh
+
+cd ..
+git clone --depth 1 -b v0.30.0 https://github.com/vllm-project/vllm.git
+cd vllm
+VLLM_TARGET_DEVICE=empty uv pip install -e ".[audio]"
+uv pip uninstall -y triton || true
+cd ..
+
+# Clone instead of `git+https`: that path is under ~/.cache, which CANN's linker skips.
+git clone https://github.com/vllm-project/vllm-ascend.git vllm-ascend
+cd vllm-ascend
+git checkout $(tr -d '[:space:]' < ../verl-omni/.github/vllm_ascend_pin.txt)
+git submodule update --init --recursive
+uv pip install -e . \
+    --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi \
+    --extra-index-url https://download.pytorch.org/whl/cpu/ \
+    --index-strategy unsafe-best-match
+cd ..
+uv pip install --reinstall --no-deps triton-ascend==3.2.2 \
+    --extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+cd verl-omni
+```
+
+4. Install vLLM-Omni and VeRL-Omni
+
+```bash
+VLLM_OMNI_TARGET_DEVICE=npu \
+    uv pip install "vllm-omni @ git+https://github.com/vllm-project/vllm-omni.git@$(cat .github/vllm_omni_pin.txt)"
 uv pip install -e .
+uv pip install --upgrade onnxruntime
 ```
-
-This installs `vllm-omni` and `verl-omni` with its core dependencies.
-
-> **Ascend PyTorch version alignment:** VeRL-Omni does not require every NPU
-> environment to use one fixed `torch` version such as 2.10.0. Choose a
-> mutually compatible `torch` / `torch-npu` pair for the installed CANN and
-> vLLM-Ascend versions, and pin that pair before installing the engine and
-> training stack. Packages such as `vllm`, `vllm-ascend`, `vllm-omni`, and
-> `verl` may resolve different PyTorch versions while they are installed.
-> Re-apply the selected pair after all four packages are installed if the
-> resolver changed it, then run the version checks below.
 
 ### Extras
 
@@ -62,6 +92,7 @@ The CUDA `gpu` extra is not used on NPU. NPU recipes override the attention back
 ```bash
 python -c "from importlib.metadata import version; import torch, torch_npu; print('torch', torch.__version__, '| torch-npu', version('torch-npu'), '| NPU', torch.npu.is_available())"
 python -c "import vllm; print('vllm', vllm.__version__)"
+python -c "import triton; from triton.backends import backends; print('triton', triton.__version__, sorted(backends))"
 python -c "from importlib.metadata import version; import vllm_ascend; print('vllm-ascend', version('vllm-ascend'))"
 python -c "from importlib.metadata import version; import vllm_omni; print('vllm-omni', version('vllm-omni'))"
 python -c "import verl; print('verl', verl.__version__)"
