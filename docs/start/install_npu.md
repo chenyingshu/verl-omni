@@ -1,6 +1,6 @@
 # Installation (NPU)
 
-Last updated: 10/14/2026
+Last updated: 10/16/2026
 
 For NVIDIA GPU, see the {doc}`GPU installation guide <install>`. For AMD GPU, see the {doc}`ROCm installation guide <install_rocm>`.
 
@@ -43,9 +43,13 @@ uv pip install --force-reinstall torch-npu==2.10.0.post4 \
 
 3. Install vLLM and vLLM-Ascend
 
+Use `ASCEND_HOME_PATH` to select a custom CANN toolkit installation; otherwise,
+the commands use the `latest` symlink. Load ATB from its own installation
+directory rather than deriving its location from the toolkit path.
+
 ```bash
-source ${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh
-source ${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/../nnal/atb/set_env.sh
+source "${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/latest}/set_env.sh"
+source /usr/local/Ascend/nnal/atb/set_env.sh
 
 cd ..
 git clone --depth 1 -b v0.30.0 https://github.com/vllm-project/vllm.git

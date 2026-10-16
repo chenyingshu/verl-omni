@@ -221,8 +221,8 @@ the matching checks:
 | `ci-e2e-diffusion` | Diffusion trainer e2e GPU smoke (4 GPUs) |
 | `ready-for-ci` | Selective GPU smoke suite in parallel (Up to 8 GPUs), plus the full NPU smoke suite when the PR matches the NPU path filter |
 | `ci-npu` | Full NPU smoke suite (8 NPUs) |
-| `ci-npu-rollout` | NPU rollout smoke only |
-| `ci-npu-flowgrpo` | NPU FlowGRPO smoke only |
+| `ci-npu-core` | Core NPU smoke tests; currently the rollout test |
+| `ci-npu-e2e` | NPU end-to-end smoke tests for FlowGRPO and DanceGRPO |
 
 Labels are removed automatically when new commits are pushed; re-apply the
 label after each update. 
