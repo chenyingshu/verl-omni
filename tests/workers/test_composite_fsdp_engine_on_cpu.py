@@ -493,18 +493,40 @@ class TestStripQwenVlVisionTower:
         torch.testing.assert_close(out, torch.tensor([0.0]))
         assert out.device == module.device
 
-    def test_strips_lora_module_visual(self):
-        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
+    def test_patched_build_module_strips_before_lora_wrap(self):
+        from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build, qwen2_vl_base_forward
 
-        module = torch.nn.Module()
-        module.device = torch.device("cpu")
-        module.model = torch.nn.Module()
-        module.model.model = torch.nn.Module()
-        module.model.model.visual = torch.nn.Linear(4, 4)
-        assert strip_qwen_image_vision_tower(module) is True
-        assert callable(module.model.model.visual)
-        assert not isinstance(module.model.model.visual, torch.nn.Module)
-        out = module.model.model.visual(torch.zeros(2, 3), grid_thw=torch.zeros(1, 3))
+        base = torch.nn.Module()
+        base.device = torch.device("cpu")
+        base.model = torch.nn.Module()
+        base.model.visual = torch.nn.Linear(4, 4)
+
+        def build_lora_module(module):
+            wrapped = torch.nn.Module()
+            wrapped.model = module
+            return wrapped
+
+        engine = SimpleNamespace(
+            _build_module=lambda: base,
+            _build_lora_module=build_lora_module,
+        )
+        patch_composite_ar_engine_module_build(
+            engine,
+            SimpleNamespace(architecture="QwenImagePipeline"),
+            strategy="fsdp",
+        )
+
+        assert engine._build_lora_module is build_lora_module
+
+        module = engine._build_module()
+        assert module is base
+        assert module.model.forward.__func__ is qwen2_vl_base_forward
+        assert callable(module.model.visual)
+        assert not isinstance(module.model.visual, torch.nn.Module)
+
+        lora_module = engine._build_lora_module(module)
+        assert lora_module.model.model.visual is module.model.visual
+        out = lora_module.model.model.visual(torch.zeros(2, 3), grid_thw=torch.zeros(1, 3))
         torch.testing.assert_close(out, torch.tensor([0.0]))
         assert out.device == module.device
 

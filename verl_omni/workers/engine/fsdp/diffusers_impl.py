@@ -72,7 +72,7 @@ from verl_omni.utils.diffusion_compile import _maybe_compile_repeated_blocks
 from verl_omni.utils.fsdp_utils import apply_fsdp2, collect_lora_params
 from verl_omni.workers.config import DiffusionModelConfig
 from verl_omni.workers.engine.lora_adapter_mixin import LoRAAdapterMixin
-from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build, qwen2_vl_base_forward
+from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -1708,15 +1708,6 @@ class CompositeFSDPEngine(BaseEngine):
         self.ar_engine.initialize()
         self.dit_engine.initialize()
 
-        # TODO: (susan) delete after fixing bug
-        if self.ar_engine._is_lora:
-            self.ar_engine.module.base_model.model.model.forward = qwen2_vl_base_forward.__get__(
-                self.ar_engine.module.base_model.model.model
-            )
-        else:
-            self.ar_engine.module.model.forward = qwen2_vl_base_forward.__get__(self.ar_engine.module.model)
-        print("Monkey patch verl.models.transformers.qwen2_vl._get_input_embeds")  # line 388-394
-
     def next_stage(self) -> None:
         """Switch stage and engine"""
         self.ar_stage = not self.ar_stage
@@ -1878,17 +1869,6 @@ class CompositeFSDPEngine(BaseEngine):
                             )
 
         return merged
-
-    # @property
-    # def has_lora(self) -> bool:
-    #     """Return True if either AR or DiT sub-engine carries a default LoRA adapter."""
-    #     for sub_engine in (self.ar_engine, self.dit_engine):
-    #         module = getattr(sub_engine, "module", None)
-    #         peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
-    #         if peft_model is not None and getattr(peft_model, "peft_config", None):
-    #             if peft_model.peft_config.get("default") is not None:
-    #                 return True
-    #     return False
 
     def get_lora_peft_config(self, adapter_name: str = "default") -> dict[str, Any] | None:
         """PEFT metadata for colocated diffusion rollout LoRA apply."""

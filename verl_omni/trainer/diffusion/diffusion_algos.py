@@ -1922,16 +1922,10 @@ class DualGRPOLoss(DiffusionLossFn):
                 f"Available data keys: {_format_available_keys(data)}."
             )
 
-        log_prob = model_output["log_probs"]
-        if log_prob.is_nested:
-            from verl.workers.utils.padding import no_padding_2_padding
-
-            log_prob = no_padding_2_padding(log_prob, data)
-
         policy_loss_fn = get_policy_loss_fn("vanilla")
         pg_loss, pg_metrics = policy_loss_fn(
             old_log_prob=data["old_log_probs"],
-            log_prob=log_prob,
+            log_prob=model_output["log_probs"],
             advantages=data["advantages"],
             response_mask=data["response_mask"].to(dtype=torch.bool),
             loss_agg_mode=config.loss_agg_mode,
