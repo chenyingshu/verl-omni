@@ -17,8 +17,8 @@ Smoke-test ``CompositeAgentLoopWorker`` end-to-end on Qwen-Image.
 
 ``generate_sequences`` returns two ``DataProto`` objects:
 
-- AR part: ``n`` rows of token ``responses`` and ``rollout_ar_log_probs``, with no named media fields.
-- Diffusion part: ``n * m`` rows of image ``responses`` and DiT trajectory fields, 
+- AR part: ``m`` rows of token ``responses`` and ``rollout_ar_log_probs``, with no named media fields.
+- Diffusion part: ``n * m`` rows of image ``responses`` and DiT trajectory fields,
   using named image artifacts. ``responses`` is the decoded ``image_preview``.
 """
 
