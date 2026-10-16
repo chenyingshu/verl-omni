@@ -53,10 +53,8 @@ def strip_qwen_image_vision_tower(module: torch.nn.Module) -> bool:
     ``module.visual`` (older).
     """
     visual_owner = None
-    if hasattr(module, "model") and hasattr(module.model, "visual"):  # full weights
+    if hasattr(module, "model") and hasattr(module.model, "visual"):
         visual_owner = module.model
-    elif hasattr(module, "model") and hasattr(module.model, "model") and hasattr(module.model.model, "visual"):  # lora
-        visual_owner = module.model.model
     if visual_owner is None:
         logger.warning("Qwen-VL vision tower not found on Qwen-ImageAR module; skipping strip")
         return False
@@ -90,9 +88,16 @@ def patch_composite_ar_engine_module_build(
 
     def _build_module(self):
         module = self._original_build_module()
+
+        # TODO: (susan) delete after fixing bug
+        # in https://github.com/verl-project/verl/pull/8035, verl > 0.9.1
+        module.model.forward = qwen2_vl_base_forward.__get__(module.model)
+        print("Monkey patch verl.models.transformers.qwen2_vl._get_input_embeds")
+
         # Qwen-Image is text-only. Qwen-Image-Edit keeps the vision tower.
         if should_strip_qwen_image_vision_tower(self._verl_omni_diffusion_model_config):
             strip_qwen_image_vision_tower(module)
+
         return module
 
     def _build_fsdp_module(self, module):
@@ -208,6 +213,8 @@ def _get_input_embeds(
     return inputs_embeds, attention_mask
 
 
+# verl monkey patch use
+# TODO: (susan) delete after fixing the bug in verl
 def qwen2_vl_base_forward(
     self: Qwen2VLForConditionalGeneration,
     input_ids: torch.LongTensor,
