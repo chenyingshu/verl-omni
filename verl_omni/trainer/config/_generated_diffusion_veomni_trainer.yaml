@@ -107,6 +107,10 @@ actor_rollout_ref:
       add_kl_coefficient: true
       dgpo_beta: 100.0
       dgpo_clip_range: 0.01
+      video_weight: 1.0
+      audio_weight: 1.0
+      video_ref_kl_coef: 0.0
+      audio_ref_kl_coef: 0.0
     rollout_correction:
       _target_: verl.trainer.config.algorithm.RolloutCorrectionConfig
       bypass_mode: ${oc.select:algorithm.rollout_correction.bypass_mode,false}

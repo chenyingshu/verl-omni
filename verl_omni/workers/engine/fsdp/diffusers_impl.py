@@ -255,7 +255,7 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
 
         if self.model_config.enable_gradient_checkpointing:
             try:
-                module.enable_gradient_checkpointing()
+                self._configure_gradient_checkpointing(module)
             except AttributeError:
                 raise NotImplementedError(
                     f"Gradient checkpointing is enabled in config, but {type(module).__name__} "
@@ -269,6 +269,9 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
 
         module.can_generate = lambda: False
         return module
+
+    def _configure_gradient_checkpointing(self, module):
+        module.enable_gradient_checkpointing()
 
     def _build_module(self):
         from diffusers import AutoModel
@@ -317,7 +320,7 @@ class DiffusersFSDPEngine(LoRAAdapterMixin, BaseEngine, ABC):
             )
 
             if self.model_config.enable_gradient_checkpointing:
-                module.enable_gradient_checkpointing()
+                self._configure_gradient_checkpointing(module)
 
             # patch for checkpoint saving
             def save_config(self, save_directory: str | os.PathLike):
@@ -1437,31 +1440,28 @@ class DPODiffusersFSDPEngine(DiffusersFSDPEngine):
 class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
     """Diffusers FSDP engine for direct-preference / forward-process objectives (e.g. DiffusionNFT)."""
 
+    def __init__(
+        self,
+        model_config: DiffusionModelConfig,
+        engine_config: FSDPEngineConfig,
+        optimizer_config: FSDPOptimizerConfig,
+        checkpoint_config: CheckpointConfig,
+    ):
+        DiffusionModelBase.get_class(model_config).validate_engine_config(engine_config)
+        super().__init__(model_config, engine_config, optimizer_config, checkpoint_config)
+
+    def _configure_gradient_checkpointing(self, module):
+        DiffusionModelBase.get_class(self.model_config).configure_gradient_checkpointing(module, self.engine_config)
+
     def forward_backward_batch(
         self, data: TensorDict, loss_function: Callable, forward_only: bool = False
     ) -> list[TensorDict]:
         return self._run_forward_backward_batch(data, loss_function, forward_only, timesteps_key="train_timesteps")
 
     def prepare_model_inputs(self, micro_batch: TensorDict, step: int):
-        x0 = micro_batch["latents_clean"]
-        timestep = micro_batch["train_timesteps"][:, step]
-        num_train_timesteps = getattr(self.scheduler.config, "num_train_timesteps", None)
-        if num_train_timesteps is None:
-            raise ValueError(
-                "Converting `train_timesteps` to flow time requires "
-                f"scheduler.config.num_train_timesteps, but {type(self.scheduler).__name__} "
-                "does not define it."
-            )
-        tu.assign_non_tensor(micro_batch, num_train_timesteps=int(num_train_timesteps))
-        t = timestep.float() / float(num_train_timesteps)
-        t_expanded = t.view(-1, *([1] * (x0.ndim - 1)))
-
-        if micro_batch.get("forward_noise", None) is not None:
-            forward_noise = micro_batch["forward_noise"]
-            noise = forward_noise[:, step] if forward_noise.ndim == x0.ndim + 1 else forward_noise
-        else:
-            noise = torch.randn_like(x0.float())
-        xt = (1.0 - t_expanded) * x0 + t_expanded * noise
+        latents, timesteps, loss_context = DiffusionModelBase.get_class(self.model_config).prepare_training_inputs(
+            micro_batch, step, self.scheduler
+        )
 
         prompt_embeds = micro_batch["prompt_embeds"]
         prompt_embeds_mask = micro_batch["prompt_embeds_mask"]
@@ -1489,8 +1489,8 @@ class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
         model_inputs, negative_model_inputs = prepare_model_inputs(
             module=self.module,
             model_config=self.model_config,
-            latents=xt,
-            timesteps=timestep,
+            latents=latents,
+            timesteps=timesteps,
             prompt_embeds=prompt_embeds,
             prompt_embeds_mask=prompt_embeds_mask,
             negative_prompt_embeds=negative_prompt_embeds,
@@ -1498,21 +1498,14 @@ class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
             micro_batch=micro_batch,
             step=step,
         )
-        return model_inputs, negative_model_inputs, x0, xt, t_expanded
+        return model_inputs, negative_model_inputs, loss_context
 
     def prepare_model_outputs(self, output, micro_batch: TensorDict):
-        old_prediction, forward_prediction, ref_forward_prediction, x0, xt, t_expanded = output
-        return {
-            "old_prediction": old_prediction,
-            "forward_prediction": forward_prediction,
-            "ref_forward_prediction": ref_forward_prediction,
-            "x0": x0,
-            "xt": xt,
-            "t_expanded": t_expanded,
-        }
+        predictions, loss_context = output
+        return DiffusionModelBase.get_class(self.model_config).prepare_model_outputs(predictions, loss_context)
 
     def forward_step(self, micro_batch: TensorDict, loss_function, forward_only, step):
-        model_inputs, negative_model_inputs, x0, xt, t_expanded = self.prepare_model_inputs(
+        model_inputs, negative_model_inputs, loss_context = self.prepare_model_inputs(
             micro_batch=micro_batch, step=step
         )
 
@@ -1522,7 +1515,12 @@ class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
                 model_config=self.model_config,
                 model_inputs=model_inputs,
                 negative_model_inputs=negative_model_inputs,
-            ).detach()
+            )
+            old_prediction = (
+                old_prediction.detach()
+                if isinstance(old_prediction, torch.Tensor)
+                else tuple(prediction.detach() for prediction in old_prediction)
+            )
 
         forward_prediction = forward(
             module=self.module,
@@ -1538,28 +1536,28 @@ class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
                     model_config=self.model_config,
                     model_inputs=model_inputs,
                     negative_model_inputs=negative_model_inputs,
-                ).detach()
+                )
+                ref_forward_prediction = (
+                    ref_forward_prediction.detach()
+                    if isinstance(ref_forward_prediction, torch.Tensor)
+                    else tuple(prediction.detach() for prediction in ref_forward_prediction)
+                )
         self._set_adapter("default")
 
         model_output = self.prepare_model_outputs(
-            output=(old_prediction, forward_prediction, ref_forward_prediction, x0, xt, t_expanded),
+            output=(
+                {
+                    "old_prediction": old_prediction,
+                    "forward_prediction": forward_prediction,
+                    "ref_forward_prediction": ref_forward_prediction,
+                },
+                loss_context,
+            ),
             micro_batch=micro_batch,
         )
 
         if loss_function is not None:
-            # Per-timestep loss inputs are sliced to this step; per-sample group fields pass through.
-            loss_inputs = {
-                key: micro_batch[key][:, step]
-                for key in ("reward_prob", "advantages")
-                if micro_batch.get(key, None) is not None
-            }
-            loss_inputs.update(
-                {
-                    key: micro_batch[key]
-                    for key in ("group_index", "group_size")
-                    if micro_batch.get(key, None) is not None
-                }
-            )
+            loss_inputs = DiffusionModelBase.get_class(self.model_config).prepare_loss_inputs(micro_batch, step)
             data = tu.get_tensordict(loss_inputs)
             tu.assign_non_tensor(
                 data,
@@ -1571,7 +1569,8 @@ class NFTDiffusersFSDPEngine(DiffusersFSDPEngine):
             loss, metrics = loss_function(model_output=model_output, data=data, dp_group=self.get_data_parallel_group())
         else:
             assert forward_only, "forward_only must be True when loss_function is None"
-            loss = torch.tensor(1.0, device=x0.device)
+            prediction = forward_prediction if isinstance(forward_prediction, torch.Tensor) else forward_prediction[0]
+            loss = torch.tensor(1.0, device=prediction.device)
             metrics = {}
 
         output = {
