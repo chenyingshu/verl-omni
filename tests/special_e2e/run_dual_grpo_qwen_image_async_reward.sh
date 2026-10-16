@@ -4,12 +4,11 @@
 # Exercises:
 #   dummy parquet -> composite_single_turn_agent (AR rewrite + DiT images) ->
 #   streaming MultiVisualRewardManager on a dedicated reward pool ->
-#   AR reward/ar aggregation inside the composite loop -> FlowGRPO LoRA update.
+#   AR reward/ar aggregation inside the agent loop -> FlowGRPO LoRA update.
 #
 # GPU layout (async reward needs a reward pool separate from actor/rollout):
 #   - NUM_GPUS_ACTOR:  colocated actor + rollout
 #   - NUM_GPUS_REWARD: UnifiedReward stand-in (tiny Qwen3-VL) via vLLM
-#   Defaults split NUM_GPUS as (NUM_GPUS - 1) + 1. At least 2 visible GPUs.
 #
 # Requires: vllm-omni, diffusers>=0.37,
 #   tiny Qwen-Image at ~/models/tiny-random/Qwen-Image
@@ -62,7 +61,8 @@ fi
 rollout_m=2
 rollout_n=2
 micro_bsz_per_gpu=1
-train_batch_size=4 #${NUM_GPUS_ACTOR}
+train_batch_size=$((NUM_GPUS_ACTOR * 2))
+# must set a larger batch size to avoid wrong nested tensor when using 4D M-RoPE
 mini_bsz=${train_batch_size}
 synthetic_train_size=$((train_batch_size * TOTAL_TRAIN_STEPS))
 if [[ "${synthetic_train_size}" -lt 2 ]]; then
