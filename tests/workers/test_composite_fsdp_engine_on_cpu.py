@@ -468,38 +468,24 @@ class TestCompositeEngineCtx:
         dit_ctx.__exit__.assert_called_once()
 
 
-class TestStripQwenVlVisionTower:
-    def test_strips_only_qwen_image_pipeline_architecture(self):
-        from verl_omni.workers.engine.utils import should_strip_qwen_image_vision_tower
-
-        snapshot = "/cache/models--Qwen--Qwen-Image/snapshots/abc123"
-        assert should_strip_qwen_image_vision_tower(SimpleNamespace(path=snapshot, architecture="QwenImagePipeline"))
-        assert not should_strip_qwen_image_vision_tower(
-            SimpleNamespace(path="Qwen/Qwen-Image-Edit", architecture="QwenImageEditPlusPipeline")
-        )
-        assert not should_strip_qwen_image_vision_tower(SimpleNamespace(path="Qwen/Qwen-Image", architecture=None))
-
-    def test_strips_nested_model_visual(self):
-        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
-
-        module = torch.nn.Module()
-        module.device = torch.device("cpu")
+def _ar_module_with_visual(*, nested: bool) -> torch.nn.Module:
+    module = torch.nn.Module()
+    module.device = torch.device("cpu")
+    if nested:
         module.model = torch.nn.Module()
         module.model.visual = torch.nn.Linear(4, 4)
-        assert strip_qwen_image_vision_tower(module) is True
-        assert callable(module.model.visual)
-        assert not isinstance(module.model.visual, torch.nn.Module)
-        out = module.model.visual(torch.zeros(2, 3), grid_thw=torch.zeros(1, 3))
-        torch.testing.assert_close(out, torch.tensor([0.0]))
-        assert out.device == module.device
+    else:
+        module.visual = torch.nn.Linear(4, 4)
+        module.model = torch.nn.Module()
+    return module
 
-    def test_patched_build_module_strips_before_lora_wrap(self):
-        from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build, qwen2_vl_base_forward
 
-        base = torch.nn.Module()
-        base.device = torch.device("cpu")
-        base.model = torch.nn.Module()
-        base.model.visual = torch.nn.Linear(4, 4)
+class TestConfigureArModuleDispatch:
+    def test_patched_build_module_dispatches_registered_adapter(self):
+        from verl_omni.pipelines.qwen_image_dual_grpo.ar_module_adapter import qwen2_vl_base_forward
+        from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build
+
+        base = _ar_module_with_visual(nested=True)
 
         def build_lora_module(module):
             wrapped = torch.nn.Module()
@@ -512,7 +498,7 @@ class TestStripQwenVlVisionTower:
         )
         patch_composite_ar_engine_module_build(
             engine,
-            SimpleNamespace(architecture="QwenImagePipeline"),
+            SimpleNamespace(architecture="QwenImagePipeline", algorithm="dual_grpo", external_lib=None),
             strategy="fsdp",
         )
 
@@ -530,10 +516,22 @@ class TestStripQwenVlVisionTower:
         torch.testing.assert_close(out, torch.tensor([0.0]))
         assert out.device == module.device
 
-    def test_returns_false_when_missing(self):
-        from verl_omni.workers.engine.utils import strip_qwen_image_vision_tower
+    def test_patched_build_module_leaves_other_adapters_unchanged(self):
+        from verl_omni.pipelines.qwen_image_dual_grpo.ar_module_adapter import qwen2_vl_base_forward
+        from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build
 
-        assert strip_qwen_image_vision_tower(torch.nn.Module()) is False
+        base = _ar_module_with_visual(nested=True)
+        visual = base.model.visual
+        engine = SimpleNamespace(_build_module=lambda: base)
+        patch_composite_ar_engine_module_build(
+            engine,
+            SimpleNamespace(architecture="QwenImageEditPlusPipeline", algorithm="flow_grpo", external_lib=None),
+            strategy="fsdp",
+        )
+
+        module = engine._build_module()
+        assert module.model.visual is visual
+        assert getattr(module.model.forward, "__func__", None) is not qwen2_vl_base_forward
 
     def test_dual_grpo_no_longer_ignores_visual_under_fsdp2(self):
         from verl_omni.pipelines.qwen_image_dual_grpo.diffusers_training_adapter import QwenImageDualGRPO
