@@ -315,7 +315,7 @@ async def test_consumer_isolates_invalid_image_from_batch(monkeypatch):
     await consumer
 
     assert results[0] == 1.0
-    assert isinstance(results[1], AssertionError)
+    assert isinstance(results[1], TypeError)
     assert results[2] == 3.0
     assert len(inferencer.batches) == 1
     assert inferencer.batches[0][0] == ["prompt", "prompt"]
