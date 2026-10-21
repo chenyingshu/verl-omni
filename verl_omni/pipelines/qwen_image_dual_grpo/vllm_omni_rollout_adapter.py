@@ -121,6 +121,20 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
 
     supports_request_batch = False
 
+    @staticmethod
+    def build_ar_position_ids(attention_mask: torch.Tensor) -> torch.Tensor:
+        """Text-only Qwen2.5-VL M-RoPE layout for composite AR postprocess.
+
+        Returns ``(1, 4, seq_len)`` so ``left_right_2_no_padding`` can unpad the
+        multi-channel positions used by the text encoder. Vision channels reuse
+        the 1D text index until multimodal AR inputs are wired.
+        """
+        valid_mask = attention_mask[0].bool()
+        text_position_ids = torch.ones((1, attention_mask.shape[-1]), dtype=torch.long)
+        text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
+        # M-RoPE layout: B x 4 x seq_len.
+        return text_position_ids.unsqueeze(1).expand(-1, 4, -1)
+
     def _get_qwen_text_response(
         self,
         prompt_ids: torch.Tensor,

@@ -47,6 +47,7 @@ from verl_omni.agent_loop.diffusion_agent_loop import (
     _InternalDiffusionAgentLoopOutput,
 )
 from verl_omni.agent_loop.utils import maybe_per_rollout_seeds
+from verl_omni.pipelines.model_base import VllmOmniPipelineBase
 
 AR_REWARD_KEY = "reward/ar"
 
@@ -96,7 +97,7 @@ class _InternalARAgentLoopOutput(ARAgentLoopOutput):
     input_ids: torch.Tensor
     """Padded input ids(prompt_ids + response_ids)."""
     position_ids: torch.Tensor
-    """Padded position ids."""
+    """Padded position ids; layout comes from the rollout adapter hook."""
     response_mask: torch.Tensor
     """Padded response mask."""
     attention_mask: torch.Tensor
@@ -151,8 +152,8 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             - ``response_mask``: ``[ar_bsz, ar_response_length]`` attention mask for padded response tokens.
             - ``input_ids``: ``[ar_bsz, prompt_length + ar_response_length]`` padded full response tokens.
             - ``attention_mask``: ``[ar_bsz, prompt_length + ar_response_length]`` attention mask for input_ids.
-            - ``position_ids``: ``[ar_bsz, 4, prompt_length + ar_response_length]``
-            M-RoPE 3D position ids for input_ids.
+            - ``position_ids``: AR position ids; shape is defined by the registered
+              rollout adapter's ``build_ar_position_ids`` hook (default ``[ar_bsz, seq_len]``).
             - ``rollout_ar_log_probs`` (optional): AR token log-probs.
             - ``rm_scores`` (optional): ``[ar_bsz, 1]`` AR reward scores.
 
@@ -338,17 +339,15 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             response_mask[0, : len(output.response_mask)] = torch.tensor(output.response_mask, dtype=torch.long)
         response_mask = response_mask * response_output["attention_mask"]
 
-        # token ids and attention mask forprompt + response
+        # token ids and attention mask for prompt + response
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
         input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
 
-        # Currently support text-only position ids as 3D position ids.
-        # TODO: (susan) extend to multi-modal 3D position ids for M-RoPE
-        valid_mask = attention_mask[0].bool()
-        text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
-        text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
-        # M-RoPE layout expected by ``left_right_2_no_padding``: B x 4 x seq_len.
-        position_ids = text_position_ids.unsqueeze(1).expand(-1, 4, -1)
+        position_ids = VllmOmniPipelineBase.resolve_ar_position_ids(
+            self.model_config.architecture,
+            self.model_config.algorithm,
+            attention_mask,
+        )
 
         ar_response_logprobs = None
         if output.ar_response_logprobs is not None:
