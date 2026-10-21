@@ -150,7 +150,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             - ``responses``: ``[ar_bsz, ar_response_length]`` padded generated AR tokens.
             - ``response_mask``: ``[ar_bsz, ar_response_length]`` attention mask for padded response tokens.
             - ``input_ids``: ``[ar_bsz, prompt_length + ar_response_length]`` padded full response tokens.
-            - ``attention_mask`: ``[ar_bsz, prompt_length + ar_response_length]`` attention mask for input_ids.
+            - ``attention_mask``: ``[ar_bsz, prompt_length + ar_response_length]`` attention mask for input_ids.
             - ``position_ids``: ``[ar_bsz, 4, prompt_length + ar_response_length]``
             M-RoPE 3D position ids for input_ids.
             - ``rollout_ar_log_probs`` (optional): AR token log-probs.
@@ -318,7 +318,9 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
             return_attention_mask=True,
         )
 
-        response_length = self.rollout_config.ar.response_length
+        response_length = (
+            self.rollout_config.val_kwargs.ar.response_length if validate else self.rollout_config.ar.response_length
+        )
         response_output = self._pad_token_ids(
             output.response_ids,
             max_length=response_length,
@@ -329,7 +331,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         # Zero-pad the 0/1 mask. tokenizer.pad would write pad_token_id into the tail.
         if len(output.response_mask) > response_length:
             raise ValueError(
-                f"AR response_mask length {len(output.response_mask)} exceeds ar.response_length={response_length}."
+                f"AR response_mask length {len(output.response_mask)} exceeds response_length={response_length}."
             )
         response_mask = torch.zeros((1, response_length), dtype=torch.long)
         if output.response_mask:
@@ -352,7 +354,7 @@ class CompositeAgentLoopWorker(DiffusionAgentLoopWorker):
         if output.ar_response_logprobs is not None:
             ar_response_logprobs = output.ar_response_logprobs
             if isinstance(ar_response_logprobs, list):
-                pad_size = self.rollout_config.ar.response_length - len(output.ar_response_logprobs)
+                pad_size = response_length - len(output.ar_response_logprobs)
                 ar_response_logprobs = torch.tensor(ar_response_logprobs + [0.0] * pad_size).unsqueeze(0)
             elif ar_response_logprobs.dim() == 1:
                 # Unbatch of (B, response_length) leaves one row.
