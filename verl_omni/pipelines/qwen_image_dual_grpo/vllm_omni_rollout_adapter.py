@@ -250,8 +250,11 @@ class QwenImagePipelineWithDualLogProb(QwenImagePipelineWithLogProb):
             ar_all_log_probs = None
 
         # compute attention masks and position ids
+        eos_ids = getattr(self.text_encoder.generation_config, "eos_token_id", None)
+        if eos_ids is None:
+            eos_ids = self.tokenizer.eos_token_id
         response_mask = get_response_mask(
-            response_id=ar_response_ids, eos_token=self.tokenizer.eos_token_id, dtype=attention_mask.dtype
+            response_id=ar_response_ids, eos_token=eos_ids, dtype=attention_mask.dtype
         )  # B*num_responses_per_prompt x seq_len
         if ar_all_log_probs is not None:
             ar_all_log_probs = torch.where(response_mask.bool(), ar_all_log_probs, torch.zeros_like(ar_all_log_probs))
