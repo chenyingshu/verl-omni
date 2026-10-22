@@ -1,6 +1,6 @@
 # Installation (NPU)
 
-Last updated: 10/16/2026
+Last updated: 10/18/2026
 
 For NVIDIA GPU, see the {doc}`GPU installation guide <install>`. For AMD GPU, see the {doc}`ROCm installation guide <install_rocm>`.
 
@@ -11,8 +11,7 @@ For NVIDIA GPU, see the {doc}`GPU installation guide <install>`. For AMD GPU, se
 
 ## Install
 
-These instructions target Ascend A2/910B and A3. Atlas 300I DUO and Atlas 200I Pro
-are not supported by this installation recipe because they do not use Triton-Ascend.
+Supported devices: Ascend A2, A3, and A5.
 
 ```bash
 git clone https://github.com/verl-project/verl-omni.git
@@ -103,159 +102,59 @@ python -c "import verl; print('verl', verl.__version__)"
 python -c "import verl_omni; print('VeRL-Omni ready')"
 ```
 
-## Build Your Own Docker Image
+## Docker
 
-* Ascend Atlas A2 NPU Dockerfile: [`docker/Dockerfile.a2.npu`](https://github.com/verl-project/verl-omni/blob/main/docker/Dockerfile.a2.npu)
-* Ascend Atlas A3 NPU Dockerfile: [`docker/Dockerfile.a3.npu`](https://github.com/verl-project/verl-omni/blob/main/docker/Dockerfile.a3.npu)
+Use [`docker/Dockerfile.npu`](https://github.com/verl-project/verl-omni/blob/main/docker/Dockerfile.npu)
+for all supported Ascend devices. The image includes CANN, `torch-npu`,
+`vllm-ascend`, and `vllm-omni`.
 
-The NPU images are split by Ascend hardware generation: `Dockerfile.a2.npu` is intended for Ascend 910B / Atlas A2, and `Dockerfile.a3.npu` is intended for Ascend Atlas A3. Both NPU images include CANN, `torch-npu`, `vllm-ascend`, and `vllm-omni`.
+### Build
 
-The `torch` and `torch-npu` versions in these Dockerfiles are the currently
-validated image defaults, not a universal VeRL-Omni requirement. Each
-Dockerfile installs the selected pair before the engine stack, then re-applies
-the same pair after installing `vllm`, `vllm-ascend`, `vllm-omni`, and `verl`.
-This prevents their dependency resolvers from leaving the final image with a
-mixed PyTorch stack. When changing PyTorch versions, update both alignment
-steps together and keep the pair compatible with the image's CANN version.
-
-Build context is controlled by the repo-root [`.dockerignore`](https://github.com/verl-project/verl-omni/blob/main/.dockerignore); keep large local folders such as `.venv`, `data/`, and `checkpoints/` out of the context.
-
-NVIDIA GPU images are documented in the {doc}`GPU installation guide <install>`.
-
-## Ascend NPU Docker Image
-
-### Prerequisites
-
-The Ascend NPU Docker image expects the host machine to provide the Ascend driver and device files.
-
-Before launching the container, make sure the host has:
-
-* Ascend driver installed.
-* CANN-compatible runtime environment.
-* `npu-smi` available on the host.
-* Ascend device nodes under `/dev`, such as `/dev/davinci0`, `/dev/davinci_manager`, `/dev/devmm_svm`, and `/dev/hisi_hdc`.
-* Docker permission to pass NPU devices into the container.
-
-The NPU container mounts the host driver directory:
+Set `NPU_DEVICE` to `a2`, `a3` (default), or `a5`. The Dockerfile selects the
+base image and compiler target automatically.
 
 ```bash
--v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
-```
+NPU_DEVICE=a5
 
-This allows the containerized CANN / `torch-npu` runtime to use the host Ascend driver.
-
-### Build commands
-
-From the repository root, choose the Dockerfile that matches your Ascend hardware.
-
-For Ascend Atlas A3:
-
-```bash
 docker build \
-  -f docker/Dockerfile.a3.npu \
-  -t verl-omni:npu-a3 \
+  -f docker/Dockerfile.npu \
+  --build-arg NPU_DEVICE=$NPU_DEVICE \
+  -t verl-omni:npu-$NPU_DEVICE \
   .
 ```
 
-For Ascend Atlas A2 / 910B:
+### Run
+
+The host needs the Ascend driver and firmware compatible with CANN 9.1.0.
+Set `NPU_DEVICE` to the image you built and `NPU_DEVICE_IDS` to the devices
+to expose, as listed by `npu-smi info`.
 
 ```bash
-docker build \
-  -f docker/Dockerfile.a2.npu \
-  -t verl-omni:npu-a2 \
-  .
-```
-
-When debugging dependency installation or making sure no old Docker layer is reused, add `--no-cache`:
-
-```bash
-# Atlas A3
-docker build --no-cache \
-  -f docker/Dockerfile.a3.npu \
-  -t verl-omni:npu-a3 \
-  .
-
-# Atlas A2 / 910B
-docker build --no-cache \
-  -f docker/Dockerfile.a2.npu \
-  -t verl-omni:npu-a2 \
-  .
-```
-
-You may choose different image tags locally. If you do so, replace the image name in the `docker run` command accordingly.
-
-### Launch on Ascend Atlas A3, 16 NPU
-
-Use this command on a 16-card Ascend Atlas A3 machine:
-
-```bash
-DEVICES=""
-for i in $(seq 0 15); do
-  DEVICES="$DEVICES --device=/dev/davinci$i"
+NPU_DEVICE=a5
+NPU_DEVICE_IDS=(0 1 2 3 4 5 6 7)
+DEVICES=()
+for id in "${NPU_DEVICE_IDS[@]}"; do
+  DEVICES+=(--device="/dev/davinci${id}")
+done
+for device in /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
+  if [[ -e "$device" ]]; then
+    DEVICES+=(--device="$device")
+  fi
 done
 
 docker run -it --rm \
-  --name verl_omni_16npu \
+  --name verl_omni_npu \
   --network host \
   --ipc host \
-  $DEVICES \
-  --device=/dev/davinci_manager \
-  --device=/dev/devmm_svm \
-  --device=/dev/hisi_hdc \
+  "${DEVICES[@]}" \
   -v /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi:ro \
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
   -v /mnt/data:/mnt/data \
-  verl-omni:npu-a3 \
+  verl-omni:npu-$NPU_DEVICE \
   bash
 ```
 
-### Launch on Ascend Atlas A2 / 910B, 8 NPU
-
-Use this command on an 8-card Ascend Atlas A2 / 910B machine:
-
-```bash
-DEVICES=""
-for i in $(seq 0 7); do
-  DEVICES="$DEVICES --device=/dev/davinci$i"
-done
-
-docker run -it --rm \
-  --name verl_omni_8npu \
-  --network host \
-  --ipc host \
-  $DEVICES \
-  --device=/dev/davinci_manager \
-  --device=/dev/devmm_svm \
-  --device=/dev/hisi_hdc \
-  -v /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi:ro \
-  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
-  -v /home:/home \
-  verl-omni:npu-a2 \
-  bash
-```
-
-### Notes for NPU containers
-
-* **`--network host`** — useful for Ray, distributed training, and multi-process communication.
-* **`--ipc host`** — avoids shared-memory limitations during training and rollout.
-* **`/dev/davinci*` devices** — expose Ascend NPU cards to the container.
-* **`/dev/davinci_manager`**, **`/dev/devmm_svm`**, and **`/dev/hisi_hdc`** — required Ascend runtime device files.
-* **`/usr/local/Ascend/driver`** — mounted read-only from the host so the container can use the installed Ascend driver.
-* **`npu-smi`** — mounted from the host to inspect device status inside the container.
-* **Atlas A3 16 NPU** — exposes `/dev/davinci0` through `/dev/davinci15`.
-* **Atlas A2 / 910B 8 NPU** — exposes `/dev/davinci0` through `/dev/davinci7`.
-
-Inside the container, confirm the NPU environment:
-
-```bash
-npu-smi info
-python -c "from importlib.metadata import version; import torch, torch_npu; print('torch', torch.__version__, '| torch-npu', version('torch-npu'), '| NPU', torch.npu.is_available())"
-python -c "import vllm; print('vllm', vllm.__version__)"
-python -c "from importlib.metadata import version; import vllm_ascend; print('vllm-ascend', version('vllm-ascend'))"
-python -c "from importlib.metadata import version; import vllm_omni; print('vllm-omni', version('vllm-omni'))"
-python -c "import verl; print('verl', verl.__version__)"
-python -c "import verl_omni; print('VeRL-Omni ready')"
-```
+Inside the container, run the [post-installation checks](#post-installation-verification).
 
 ## Example: Qwen-Image FlowGRPO training in Docker
 
@@ -269,7 +168,7 @@ actor_rollout_ref.model.attn_backend=_native_npu
 
 ### 1. Launch the interactive container
 
-Use the Atlas A2 or A3 launch command above.
+Use the Docker launch command above.
 
 ### 2. Prepare the OCR dataset inside the container
 
