@@ -68,6 +68,7 @@ from verl_omni.pipelines.utils import (
 )
 from verl_omni.utils.diffusion_compile import _maybe_compile_repeated_blocks
 from verl_omni.utils.fsdp_utils import apply_fsdp2
+from verl_omni.utils.config import resolve_lora_config
 from verl_omni.workers.config import DiffusionModelConfig
 from verl_omni.workers.engine.lora_adapter_mixin import LoRAAdapterMixin
 from verl_omni.workers.engine.lora_export import export_lora_for_sync
