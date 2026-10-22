@@ -1808,7 +1808,7 @@ class CompositeFSDPEngine(BaseEngine):
         ar_peft_config = ar_peft_model.peft_config.get("default", None)
 
         # currently only support lora.merge=True
-        merge_lora = self.model_config.lora.get("merge", False)
+        merge_lora = resolve_lora_config(self.model_config).merge
         peft_config = None
         if not merge_lora:
             peft_config = self._merge_composite_peft_configs(dit_peft_config, ar_peft_config, self.model_config)
@@ -1830,7 +1830,7 @@ class CompositeFSDPEngine(BaseEngine):
             **kwargs,
         )
         # currently only support lora.merge=True
-        merge_lora = getattr(self.model_config, "lora", {}).get("merge", False)
+        merge_lora = resolve_lora_config(self.model_config).merge
 
         def merged() -> Iterator[tuple[str, torch.Tensor]]:
             yield from dit_params
