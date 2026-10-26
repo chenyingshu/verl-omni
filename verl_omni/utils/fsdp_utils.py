@@ -83,6 +83,7 @@ def apply_fsdp2(model, fsdp_kwargs, config, ignored_names: Sequence[str] = ()):
     Adapted from verl's ``apply_fsdp2``; deltas are DIFF-marked.
     """
     from torch.distributed.fsdp import FSDPModule, fully_shard
+    from verl.utils.device import get_device_name
     from verl.utils.fsdp_utils import (
         CPUOffloadPolicy,
         _select_fsdp2_wrap_targets,
@@ -133,6 +134,14 @@ def apply_fsdp2(model, fsdp_kwargs, config, ignored_names: Sequence[str] = ()):
         # DIFF vs upstream: only the root call carries ignored_params
         # fsdp2 will not reshard_after_forward for root module
         fully_shard(model, ignored_params=ignored_params, **fsdp_kwargs)
+
+    # oneCCL (xccl) can abort on the ReduceOp.AVG that FSDP2 uses for fp32/bf16 gradient
+    # reduce-scatter; reduce with SUM and divide instead, as verl-hardware-plugin does for
+    # verl's own XPU engines.
+    if get_device_name() == "xpu":
+        for m in model.modules():
+            if isinstance(m, FSDPModule):
+                m.set_force_sum_reduction_for_comms(True)
 
     # Honor `forward_prefetch` config to match the FSDP1 path. Depth=1 mirrors
     # PyTorch FSDP1's hardcoded `forward_prefetch_limit=1`. Static-graph models

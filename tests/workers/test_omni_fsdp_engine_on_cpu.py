@@ -193,7 +193,7 @@ def test_engine_registered_via_decorator():
                     kwargs_found += 1
             if kw.arg == "device" and isinstance(kw.value, ast.List):
                 vals = [e.value for e in kw.value.elts if isinstance(e, ast.Constant)]
-                if set(vals) == {"cuda", "npu"}:
+                if set(vals) == {"cuda", "npu", "xpu"}:
                     kwargs_found += 1
         assert kwargs_found >= 2, (
             f"@EngineRegistry.register missing expected kwargs (model_type/backend/device); found {kwargs_found}/3"
@@ -216,7 +216,7 @@ def test_engine_registered_for_fsdp_and_fsdp2_backends():
 
     for backend in ("fsdp", "fsdp2"):
         assert backend in omni_registry, f"'{backend}' not registered for omni_model; registered: {list(omni_registry)}"
-        for device in ("cuda", "npu"):
+        for device in ("cuda", "npu", "xpu"):
             entry = omni_registry[backend].get(device)
             assert entry is not None, f"No engine for omni_model/{backend}/{device}"
             assert entry.__name__ == "OmniFSDPEngine", (
