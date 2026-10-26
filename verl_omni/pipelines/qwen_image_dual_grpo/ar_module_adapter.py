@@ -28,7 +28,7 @@ from verl.utils.transformers_compat import unpack_visual_output
 from verl_omni.pipelines.model_base import register_composite_ar_module
 
 if TYPE_CHECKING:
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2_5_VLModel
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _strip_vision_tower(module: torch.nn.Module) -> bool:
 
 # TODO: (susan) delete after fixing the bug in https://github.com/verl-project/verl/pull/8035, verl > 0.9.1
 def _get_input_embeds(
-    model: Qwen2VLForConditionalGeneration,
+    model: Qwen2_5_VLModel,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     pixel_values: Optional[torch.FloatTensor] = None,
@@ -122,7 +122,7 @@ def _get_input_embeds(
 
 
 def qwen2_vl_base_forward(
-    self: Qwen2VLForConditionalGeneration,
+    self: Qwen2_5_VLModel,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     labels: Optional[torch.LongTensor] = None,
