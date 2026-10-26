@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Debug hooks used only by the Qwen-Image FlowGRPO nightly regression."""
+"""Debug hooks used by the Qwen-Image L3 nightly regressions.
+
+The hooks patch the v1 diffusion trainer. FlowGRPO, DiffusionNFT, and online
+DPO all update through ``PolicyGradientDiffusionTrainerV1._update_actor``.
+"""
 
 from __future__ import annotations
 
@@ -300,6 +304,15 @@ def _install_driver_hook() -> None:
             "latents",
             "all_latents",
             "all_timesteps",
+            # DiffusionNFT keeps the clean latent and the timesteps it trains on.
+            "latents_clean",
+            "train_timesteps",
+            "reward_prob",
+            "returns",
+            # Online DPO trains on reference noise predictions, not SDE log-probs.
+            "ref_noise_pred",
+            "noise",
+            "timesteps",
         )
         payload = {
             "batch": _tensor_dict_subset(batch.batch, payload_keys),
@@ -312,6 +325,16 @@ def _install_driver_hook() -> None:
                 if key in batch.non_tensor_batch
             },
         }
+        # Online DPO reorders the actor batch into chosen/rejected pairs.
+        # The original row positions let compare_dumps restore session order
+        # before the repeat_index alignment, so a reward-rank swap does not
+        # look like latent drift.
+        try:
+            selected = batch.meta_info.get("prepare_actor_batch_selected_indices")
+        except Exception:
+            selected = None
+        if selected is not None:
+            payload["selected_indices"] = [int(index) for index in list(selected)]
         _dump_event("driver_forward", {"global_step": global_step}, payload)
         return original_update_actor(self, batch, *args, **kwargs)
 

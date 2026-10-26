@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Collect and compare performance metrics for the nightly FlowGRPO run."""
+"""Collect and compare performance metrics for a nightly run."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ _LOWER_IS_BETTER_KEYS = {
     "perf/time_per_step",
     "timing_s/gen",
     "timing_s/old_log_prob",
+    "timing_s/prepare_actor_batch",
+    "timing_s/ref",
     "timing_s/reward",
     "timing_s/update_actor",
     "timing_s/update_weights",
@@ -347,7 +349,7 @@ def collect(args: argparse.Namespace) -> tuple[bool, dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect Qwen-Image FlowGRPO nightly metrics")
+    parser = argparse.ArgumentParser(description="Collect Qwen-Image L3 nightly metrics")
     parser.add_argument("--metrics-jsonl", type=Path)
     parser.add_argument("--log-file", type=Path)
     parser.add_argument("--baseline", type=Path)

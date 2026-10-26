@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Nightly entrypoint for the Qwen-Image FlowGRPO V1 regression."""
+"""Nightly entrypoint for Qwen-Image L3 regressions on the v1 trainer."""
 
 from __future__ import annotations
 
