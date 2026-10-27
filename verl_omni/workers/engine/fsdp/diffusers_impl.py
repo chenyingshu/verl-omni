@@ -58,7 +58,7 @@ from verl.workers.engine.fsdp.utils import create_device_mesh, get_sharding_stra
 from verl.workers.engine.spec import ShardSpec
 from verl.workers.engine.utils import enable_full_determinism, prepare_micro_batches
 
-from verl_omni.pipelines.model_base import DiffusionModelBase
+from verl_omni.pipelines.model_base import DiffusionModelARBase, DiffusionModelBase
 from verl_omni.pipelines.utils import (
     build_scheduler,
     forward,
@@ -72,7 +72,6 @@ from verl_omni.utils.fsdp_utils import apply_fsdp2
 from verl_omni.workers.config import DiffusionModelConfig
 from verl_omni.workers.engine.lora_adapter_mixin import LoRAAdapterMixin
 from verl_omni.workers.engine.lora_export import export_lora_for_sync
-from verl_omni.workers.engine.utils import patch_composite_ar_engine_module_build
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -1547,6 +1546,73 @@ class EngineTrainModeCtx(BaseEngineCtx):
         super().__exit__(exc_type, exc_value, traceback)
 
 
+class CompositeARFSDPEngineWithLMHead(FSDPEngineWithLMHead):
+    """Autoregressive backend for composite training.
+
+    Pipeline-specific setup goes through ``DiffusionModelARBase`` after verl
+    builds the language-model module. Under FSDP2, ``super()._build_fsdp_module``
+    runs with verl-omni ``apply_fsdp2`` so adapter-declared frozen subtrees stay
+    unsharded. Packages that do not train the AR leave the registry empty and
+    both hooks become no-ops.
+    """
+
+    def __init__(
+        self,
+        model_config: HFModelConfig,
+        engine_config: FSDPEngineConfig,
+        optimizer_config: FSDPOptimizerConfig,
+        checkpoint_config: CheckpointConfig,
+        diffusion_model_config: DiffusionModelConfig,
+    ):
+        super().__init__(
+            model_config=model_config,
+            engine_config=engine_config,
+            optimizer_config=optimizer_config,
+            checkpoint_config=checkpoint_config,
+        )
+        self.diffusion_model_config = diffusion_model_config
+
+    def _build_module(self):
+        """Dispatch AR setup through ``DiffusionModelARBase`` when registered.
+
+        The DiT adapter is not consulted: this module is verl's language-model engine.
+        """
+        module = super()._build_module()
+        DiffusionModelARBase.maybe_configure_module(module, self.diffusion_model_config)
+        return module
+
+    def _build_fsdp_module(self, module):
+        """Reuse verl's FSDP wrap; under FSDP2 inject AR ``ignored_names``.
+
+        verl's ``FSDPEngine._build_fsdp_module`` calls upstream
+        ``verl.utils.fsdp_utils.apply_fsdp2`` without ``ignored_names``. For FSDP2
+        we temporarily point that call at ``verl_omni.utils.fsdp_utils.apply_fsdp2``
+        with names from ``DiffusionModelARBase.get_fsdp_ignored_module_names``.
+        FSDP1 keeps the parent path unchanged.
+        """
+        if self.engine_config.strategy != "fsdp2":
+            return super()._build_fsdp_module(module)
+
+        ar_cls = DiffusionModelARBase.peek_class(self.diffusion_model_config)
+        ignored_names = (
+            list(ar_cls.get_fsdp_ignored_module_names(self.diffusion_model_config)) if ar_cls is not None else []
+        )
+
+        import verl.workers.engine.fsdp.transformer_impl as transformer_impl
+
+        from verl_omni.utils.fsdp_utils import apply_fsdp2 as omni_apply_fsdp2
+
+        def apply_fsdp2_with_ignored(model, fsdp_kwargs, config):
+            return omni_apply_fsdp2(model, fsdp_kwargs, config, ignored_names=ignored_names)
+
+        original_apply_fsdp2 = transformer_impl.apply_fsdp2
+        transformer_impl.apply_fsdp2 = apply_fsdp2_with_ignored
+        try:
+            return super()._build_fsdp_module(module)
+        finally:
+            transformer_impl.apply_fsdp2 = original_apply_fsdp2
+
+
 @EngineRegistry.register(model_type="diffusion_composite_model", backend=["fsdp", "fsdp2"], device=["cuda", "npu"])
 class CompositeFSDPEngine(BaseEngine):
     """Composite engine delegating to separate AR and DiT FSDP backends.
@@ -1606,13 +1672,13 @@ class CompositeFSDPEngine(BaseEngine):
         ar_model_config = self.build_ar_hf_model_config(model_config)
         ar_model_config.model_type = "language_model"
         ar_optimizer_config = self.build_ar_optimizer_config(optimizer_config, model_config)
-        self.ar_engine = FSDPEngineWithLMHead(
+        self.ar_engine = CompositeARFSDPEngineWithLMHead(
             model_config=ar_model_config,
             engine_config=engine_config,
             optimizer_config=ar_optimizer_config,
             checkpoint_config=checkpoint_config,
+            diffusion_model_config=model_config,
         )
-        patch_composite_ar_engine_module_build(self.ar_engine, model_config, engine_config.strategy)
         model_config.model_type = "diffusion_model"
         self.dit_engine = PPODiffusersFSDPEngine(
             model_config=model_config,
