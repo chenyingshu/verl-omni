@@ -27,8 +27,6 @@ __all__ = ["QwenImageDualGRPO"]
 class QwenImageDualGRPO(QwenImage):
     """Training adapter for the Qwen-Image DiT under DualGRPO.
 
-    The composite AR text encoder is configured separately in ``ar_module``;
-    this class is only the DiT adapter. Do not list ``visual`` in
-    ``get_fsdp_ignored_module_names``: the AR hook deletes that tower before
-    FSDP wrap, and a trainable ignored subtree trips FSDP2's fail-closed check.
+    The composite AR text encoder is configured by ``QwenImageDualGRPOAR``.
+    This class is only the DiT adapter.
     """

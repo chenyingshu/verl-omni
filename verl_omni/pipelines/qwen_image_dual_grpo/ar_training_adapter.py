@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Qwen-Image Dual-GRPO setup for the composite AR text encoder.
+"""Qwen-Image Dual-GRPO AR training adapter for the composite text encoder.
 
-The AR backend is verl's ``FSDPEngineWithLMHead``, not apply the DiT training adapter.
+``CompositeARFSDPEngineWithLMHead`` dispatches here via ``DiffusionModelARBase``
+after verl builds the language-model module and before FSDP wrap. The DiT
+adapter remains ``diffusers_training_adapter.py``.
 """
 
 from __future__ import annotations
@@ -25,12 +27,14 @@ from typing import TYPE_CHECKING, Optional
 import torch
 from verl.utils.transformers_compat import unpack_visual_output
 
-from verl_omni.pipelines.model_base import register_composite_ar_module
+from verl_omni.pipelines.model_base import DiffusionModelARBase
 
 if TYPE_CHECKING:
-    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
+    from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2_5_VLModel
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["QwenImageDualGRPOAR", "qwen2_vl_base_forward"]
 
 
 def _strip_vision_tower(module: torch.nn.Module) -> bool:
@@ -60,9 +64,12 @@ def _strip_vision_tower(module: torch.nn.Module) -> bool:
     return True
 
 
-# TODO: (susan) delete after fixing the bug in https://github.com/verl-project/verl/pull/8035, verl > 0.9.1
+# TODO(susan): delete this copied ``_get_input_embeds``, ``qwen2_vl_base_forward``, and the
+# instance ``module.model.forward`` assignment in ``configure_module`` *together* once the
+# pinned verl includes https://github.com/verl-project/verl/pull/8035. That PR unpacks the
+# dummy visual path.
 def _get_input_embeds(
-    model: Qwen2VLForConditionalGeneration,
+    model: Qwen2_5_VLModel,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     pixel_values: Optional[torch.FloatTensor] = None,
@@ -122,7 +129,7 @@ def _get_input_embeds(
 
 
 def qwen2_vl_base_forward(
-    self: Qwen2VLForConditionalGeneration,
+    self: Qwen2_5_VLModel,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.Tensor] = None,
     labels: Optional[torch.LongTensor] = None,
@@ -134,8 +141,9 @@ def qwen2_vl_base_forward(
 ):
     """Qwen2-VL forward that builds embeds before the language-model call.
 
-    Workaround for verl's Qwen2-VL input-embed helper until
-    https://github.com/verl-project/verl/pull/8035 is in the pinned verl.
+    Local copy of verl's base forward that routes the dummy visual path through
+    ``unpack_visual_output`` (verl#8035). Delete with ``_get_input_embeds`` and the
+    instance patch in ``configure_module`` when that PR is in the pinned verl.
     """
     kwargs["inputs_embeds"], kwargs["attention_mask"] = _get_input_embeds(
         self, input_ids, attention_mask, pixel_values, pixel_values_videos, image_grid_thw, video_grid_thw
@@ -143,9 +151,23 @@ def qwen2_vl_base_forward(
     return self.language_model(input_ids=None, **kwargs)
 
 
-@register_composite_ar_module("QwenImagePipeline", "dual_grpo")
-def configure_qwen_image_dual_grpo_ar_module(module: torch.nn.Module, _model_config) -> None:
-    """Strip the unused vision tower and patch the Qwen2-VL text forward."""
-    module.model.forward = qwen2_vl_base_forward.__get__(module.model)
-    print("Patched Qwen2-VL base forward on Dual-GRPO AR module")
-    _strip_vision_tower(module)
+@DiffusionModelARBase.register("QwenImagePipeline", algorithm="dual_grpo")
+class QwenImageDualGRPOAR(DiffusionModelARBase):
+    """AR training adapter for the Qwen-Image text encoder under Dual-GRPO."""
+
+    @classmethod
+    def configure_module(cls, module: torch.nn.Module, model_config) -> None:
+        """Strip the unused vision tower and patch the Qwen2-VL text forward.
+
+        Delete the instance forward assignment together with the copied
+        ``_get_input_embeds`` / ``qwen2_vl_base_forward`` once verl#8035 is in the
+        pinned verl; keep ``_strip_vision_tower``.
+        """
+        module.model.forward = qwen2_vl_base_forward.__get__(module.model)
+        logger.info("Patched Qwen2-VL base forward on Dual-GRPO AR module")
+        _strip_vision_tower(module)
+
+    @classmethod
+    def get_fsdp_ignored_module_names(cls, model_config) -> list[str]:
+        # Vision tower is deleted in ``configure_module``; do not ignore a missing subtree.
+        return []

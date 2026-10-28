@@ -2084,12 +2084,10 @@ class DualGRPOLoss(DiffusionLossFn):
         model_output: dict[str, Any],
         data: TensorDict,
     ) -> DiffusionLossResult:
-        """Return whether this forward is the text-encoder AR stage.
-
-        DiT forwards include ``prev_sample_mean`` and a rank-1 per-step ``log_probs``.
-        AR forwards return token log-probs aligned with ``responses`` of shape
-        ``(batch, response_length)`` and do not include ``prev_sample_mean``.
-        """
+        # Return whether this forward is the text-encoder AR stage.
+        # DiT forwards include ``prev_sample_mean`` and a rank-1 per-step ``log_probs``.
+        # AR forwards return token log-probs aligned with ``responses`` of shape
+        # ``(batch, response_length)`` and do not include ``prev_sample_mean``.
         if model_output.get("prev_sample_mean", None) is not None:
             is_ar_token = False
         else:
@@ -2103,6 +2101,8 @@ class DualGRPOLoss(DiffusionLossFn):
                     f"matching responses of shape (batch, response_length). Got log_probs shape "
                     f"{tuple(log_probs.shape)} and model_output keys {sorted(model_output)}."
                 )
+
+        # Call the appropriate loss function based on the forward type.
         if is_ar_token:
             return self._ar_token_ppo(config=config, model_output=model_output, data=data)
         else:
@@ -2120,6 +2120,16 @@ class DualGRPOLoss(DiffusionLossFn):
                 "dual_grpo AR token PPO requires data['response_mask'] aligned with token log-probs. "
                 f"Available data keys: {_format_available_keys(data)}."
             )
+
+        # Mirror verl.workers.utils.losses.ppo_loss: vanilla agg_loss reads
+        # config.global_batch_info. Without this fill, token-mean falls back to the
+        # local micro-batch mask sum, so the AR gradient scales with the number of
+        # micro-batches / local tokens. The DiT path cannot cover this — only
+        # DiffusersFSDPEngine sets gradient_accumulation_steps.
+        config.global_batch_info["dp_size"] = tu.get_non_tensor_data(data, "dp_size", default=1)
+        config.global_batch_info["batch_num_tokens"] = tu.get_non_tensor_data(data, "batch_num_tokens", default=None)
+        config.global_batch_info["global_batch_size"] = tu.get_non_tensor_data(data, "global_batch_size", default=None)
+        config.global_batch_info["loss_scale_factor"] = config.loss_scale_factor
 
         policy_loss_fn = get_policy_loss_fn("vanilla")
         pg_loss, pg_metrics = policy_loss_fn(
