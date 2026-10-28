@@ -97,12 +97,14 @@ from verl_omni.trainer.diffusion.rollout_correction import (
 from verl_omni.trainer.diffusion.teacher_manager import DiffusionTeacherManager
 from verl_omni.trainer.diffusion.v1.tq_utils import (
     canonicalize_diffusion_tq_meta,
+    diffusion_dump_tq_fields,
     diffusion_metric_tq_fields,
     diffusion_persisted_tq_fields,
     diffusion_tq_batch_to_dataproto,
     put_dataproto_fields_to_tq,
     sort_diffusion_tq_keys,
 )
+from verl_omni.utils.config import resolve_lora_config
 from verl_omni.utils.net_utils import worker_group_port_ranges
 from verl_omni.utils.tracking import batch_items, validate_audio_batch
 from verl_omni.workers.config.reward import (
@@ -190,9 +192,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
                 )
             self._loss_fn = get_diffusion_loss_fn(loss_mode)
             self._loss_fn.validate_trainer_config(config)
-            self._has_old_adapter = "old" in tuple(
-                config.actor_rollout_ref.model.get("policy_state_adapters", ("default",))
-            )
+            self._has_old_adapter = "old" in resolve_lora_config(config.actor_rollout_ref.model).adapters
             if self._has_old_adapter:
                 self._validate_old_adapter_config()
         else:
@@ -213,10 +213,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         self.replay_buffer = self._build_replay_buffer()
 
         # ref_in_actor: reference policy is the actor without lora applied.
-        lora_rank = config.actor_rollout_ref.model.get("lora", {}).get("rank", 0)
-        if lora_rank <= 0:
-            lora_rank = config.actor_rollout_ref.model.get("lora_rank", 0)
-        self.ref_in_actor = lora_rank > 0 or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+        self.ref_in_actor = resolve_lora_config(config.actor_rollout_ref.model).enabled
 
         self.checkpoint_manager = None
         self.global_steps = 0
@@ -583,6 +580,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         elif not self.skip_old_log_prob:
             with marked_timer("old_log_prob", timing_raw, color="blue"):
                 old_log_prob = self._compute_old_log_prob(data)
+                metrics.update(old_log_prob.meta_info.pop("metrics", {}))
                 data = data.union(old_log_prob)
             assert "old_log_probs" in data.batch, f'"old_log_probs" not in {data.batch.keys()}'
 
@@ -1420,7 +1418,10 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         prev_sample_mean = tu.get(output, "prev_sample_mean")
         if prev_sample_mean is not None:
             old_log_prob_dict["old_prev_sample_mean"] = prev_sample_mean.float()
-        return DataProto.from_tensordict(tu.get_tensordict(old_log_prob_dict))
+        old_log_prob = DataProto.from_tensordict(tu.get_tensordict(old_log_prob_dict))
+        if (mfu := tu.get(output, "metrics").pop("mfu", None)) is not None:
+            old_log_prob.meta_info["metrics"] = {"perf/mfu/actor_infer": mfu}
+        return old_log_prob
 
     def _compute_ref_log_prob(self, data: DataProto) -> DataProto:
         """Compute reference log-probs over diffusion latents."""
@@ -1546,6 +1547,8 @@ class PolicyGradientDiffusionTrainerV1(ABC):
                 global_steps=self.global_steps, partition_id="val", batch_size=len(batch)
             )
             batch_meta = canonicalize_diffusion_tq_meta(batch_meta)
+            # Full payload on purpose: the colocated reward model receives this
+            # DataProto and may read any pipeline-emitted row field.
             data = diffusion_tq_batch_to_dataproto(batch_meta, pad_token_id=self.tokenizer.pad_token_id or 0)
 
             # Skip empty validation batches (e.g. all trajectories were dropped
@@ -1737,9 +1740,17 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         self._dump_futures.append((future, global_step))
 
     def _log_rollout_data(self, batch_meta: KVBatchMeta, timing_raw: dict, rollout_data_dir: str):
-        """Fetch rollout rows from TQ and dump sorted by uid."""
+        """Fetch rollout rows from TQ and dump sorted by uid.
+
+        Reads only the dump's fields; the trainer-only latents/embeds stay in
+        TransferQueue instead of crossing the wire a second time.
+        """
         with marked_timer("dump_rollout_generations", timing_raw, color="green"):
-            data = diffusion_tq_batch_to_dataproto(batch_meta, pad_token_id=self.tokenizer.pad_token_id or 0)
+            data = diffusion_tq_batch_to_dataproto(
+                batch_meta,
+                pad_token_id=self.tokenizer.pad_token_id or 0,
+                select_fields=diffusion_dump_tq_fields(batch_meta),
+            )
             inputs = self.tokenizer.batch_decode(data.batch["prompts"], skip_special_tokens=True)
             outputs = data.batch["responses"]
             scores = (

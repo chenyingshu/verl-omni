@@ -54,9 +54,11 @@ _PRIMARY_MODALITY = [
     ),
     ("verl_omni.pipelines.sd3_flow_grpo.vllm_omni_rollout_adapter", "StableDiffusion3Pipeline", "flow_grpo", "image"),
     ("verl_omni.pipelines.sd3_dgpo.vllm_omni_rollout_adapter", "StableDiffusion3Pipeline", "dgpo", "image"),
+    ("verl_omni.pipelines.sd3_awm.vllm_omni_rollout_adapter", "StableDiffusion3Pipeline", "awm", "image"),
     ("verl_omni.pipelines.flux_dance_grpo.vllm_omni_rollout_adapter", "FluxPipeline", "dance_grpo", "image"),
     ("verl_omni.pipelines.wan22_dance_grpo.vllm_omni_rollout_adapter", "WanPipeline", "dance_grpo", "video"),
     ("verl_omni.pipelines.ltx2_flow_grpo.vllm_omni_rollout_adapter", "LTX2Pipeline", "flow_grpo", "video"),
+    ("verl_omni.pipelines.ltx2_omni_nft.vllm_omni_rollout_adapter", "LTX2Pipeline", "omni_nft", "video"),
     ("verl_omni.pipelines.minimax_h3_flow_grpo.vllm_omni_rollout_adapter", "MiniMaxH3Pipeline", "flow_grpo", "video"),
     (
         "verl_omni.pipelines.minimax_h3_diffusion_nft.vllm_omni_rollout_adapter",
@@ -76,6 +78,7 @@ _JOINT_AUDIO_SAMPLE_RATE = [
         32000,
     ),
     ("verl_omni.pipelines.ltx2_flow_grpo.vllm_omni_rollout_adapter", "LTX2Pipeline", "flow_grpo", 24000),
+    ("verl_omni.pipelines.ltx2_omni_nft.vllm_omni_rollout_adapter", "LTX2Pipeline", "omni_nft", 24000),
 ]
 
 

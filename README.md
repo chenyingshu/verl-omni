@@ -159,9 +159,9 @@ Visit our [documentation](https://verl-omni.readthedocs.io/en/latest/index.html)
     <td>✅</td>
   </tr>
   <tr>
-    <td rowspan="5">SD3.5</td>
-    <td rowspan="5">Diffusion generator</td>
-    <td rowspan="5">Text → Image</td>
+    <td rowspan="6">SD3.5</td>
+    <td rowspan="6">Diffusion generator</td>
+    <td rowspan="6">Text → Image</td>
     <td>DPO</td>
     <td>✅</td>
   </tr>
@@ -179,6 +179,10 @@ Visit our [documentation](https://verl-omni.readthedocs.io/en/latest/index.html)
   </tr>
   <tr>
     <td><a href="docs/algo/dgpo.md">DGPO</a></td>
+    <td>✅</td>
+  </tr>
+  <tr>
+    <td><a href="examples/awm_trainer/README.md">AWM</a></td>
     <td>✅</td>
   </tr>
   <tr>
@@ -227,7 +231,7 @@ Visit our [documentation](https://verl-omni.readthedocs.io/en/latest/index.html)
 
 ## Ascend NPU Support 💠
 
-`VeRL-Omni` now supports Ascend NPU. For instructions on how to install and get started with FlowGRPO training on Ascend NPU, please refer to our [Ascend NPU Quickstart Guide](https://verl-omni.readthedocs.io/en/latest/start/flowgrpo_quickstart_npu.html).
+`VeRL-Omni` supports Ascend A2, A3, and A5 NPUs. See the [NPU installation guide](docs/start/install_npu.md) for setup and the [Ascend NPU Quickstart Guide](https://verl-omni.readthedocs.io/en/latest/start/flowgrpo_quickstart_npu.html) for FlowGRPO training.
 
 
 ## Roadmap 🗺

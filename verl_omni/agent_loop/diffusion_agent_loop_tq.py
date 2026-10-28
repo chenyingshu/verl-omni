@@ -30,7 +30,7 @@ from verl_omni.agent_loop.diffusion_agent_loop import (
     _config_to_sampling_dict,
     _InternalDiffusionAgentLoopOutput,
 )
-from verl_omni.agent_loop.utils import _derive_rollout_seed
+from verl_omni.agent_loop.utils import derive_rollout_seed
 from verl_omni.pipelines.rollout_media import ARTIFACT_CONTEXT, ARTIFACT_SPECS, PREVIEW_ARTIFACT, PRIMARY_ARTIFACT
 
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ class DiffusionAgentLoopWorkerTQ(DiffusionAgentLoopWorker):
                     # semantics): each worker only sees a chunk of the batch, so
                     # a chunk-local position would reuse the same seed offsets
                     # in every worker and roll out duplicated noise.
-                    run_sampling_params["seed"] = _derive_rollout_seed(rollout_base_seed, prompt_index * n + session_id)
+                    run_sampling_params["seed"] = derive_rollout_seed(rollout_base_seed, prompt_index * n + session_id)
                 task = asyncio.create_task(
                     self._run_agent_loop(
                         run_sampling_params,

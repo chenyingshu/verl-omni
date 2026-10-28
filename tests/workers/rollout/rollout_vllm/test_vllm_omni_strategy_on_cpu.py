@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import inspect
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import torch
@@ -544,6 +546,7 @@ async def test_ar_strategy_retains_requested_stage_outputs_and_targets_weight_sy
         def __init__(self):
             self.generate_kwargs = None
             self.rpc_kwargs = None
+            self.num_stages = 1
 
         async def generate(self, **kwargs):
             self.generate_kwargs = kwargs
@@ -551,7 +554,7 @@ async def test_ar_strategy_retains_requested_stage_outputs_and_targets_weight_sy
 
         async def collective_rpc(self, **kwargs):
             self.rpc_kwargs = kwargs
-            return "rpc-result"
+            return [None]
 
     class Adapter(OmniRolloutPipelineBase):
         @staticmethod
@@ -579,7 +582,7 @@ async def test_ar_strategy_retains_requested_stage_outputs_and_targets_weight_sy
     assert strategy._rollout_fields_by_request_id == {"request-0": {"audio_sample_rate": 24_000}}
     assert server.engine.generate_kwargs["output_modalities"] == ["latent", "audio"]
     assert server.engine.rpc_kwargs["stage_ids"] == [0]
-    assert rpc_result is None
+    assert rpc_result == [None]
 
     output = strategy.process_output(result, ar_strategy_module.SamplingParams(), {})
     assert output.extra_fields == {"global_steps": 3, "audio_sample_rate": 24_000}
@@ -610,6 +613,336 @@ async def test_ar_strategy_retains_requested_stage_outputs_and_targets_weight_sy
     assert output.token_ids == [7]
     assert output.extra_fields == {"global_steps": 3, "audio_sample_rate": 24_000}
     assert strategy._rollout_fields_by_request_id == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        [{"supported": False, "error": "unsupported LoRA weight"}],
+        [[None], [{"error": "second replica failed"}]],
+        [{"todo": True}],
+        [{"supported": False, "error": ""}],
+        None,
+        [],
+        [[]],
+    ],
+)
+async def test_weight_sync_rejects_best_effort_rpc_failures(reply):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=AsyncMock(return_value=reply))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0])
+    with pytest.raises(RuntimeError, match="update_weights_from_ipc failed"):
+        await server.collective_rpc("update_weights_from_ipc", kwargs={"base_sync_done": True}, require_ack=True)
+    server.engine.collective_rpc.assert_awaited_once_with(
+        method="update_weights_from_ipc", timeout=None, args=(), kwargs={"base_sync_done": True}, stage_ids=[0]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [[None], [[True], [None]], [{"supported": True}], [(None,)]])
+async def test_weight_sync_accepts_successful_rpc_results(reply):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=AsyncMock(return_value=reply))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: None)
+    assert await server.collective_rpc("update_weights_from_ipc", require_ack=True) == list(reply)
+    assert server.engine.collective_rpc.await_args.kwargs["stage_ids"] == [0]
+
+
+@pytest.mark.asyncio
+async def test_checked_collective_rpc_is_method_independent_and_preserves_reply_order():
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    first = [None, {"supported": True}]
+    second = [("second",), None]
+    server.engine = SimpleNamespace(num_stages=2, collective_rpc=AsyncMock(side_effect=[first, second]))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [1, 1, 0])
+
+    assert await server.collective_rpc("refresh_metadata", require_ack=True) == first + second
+    assert [call.kwargs["stage_ids"] for call in server.engine.collective_rpc.await_args_list] == [[1], [0]]
+
+
+@pytest.mark.asyncio
+async def test_checked_collective_rpc_rejects_other_method_error_envelope():
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=AsyncMock(return_value=[{"todo": True}]))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0])
+
+    with pytest.raises(RuntimeError, match="refresh_metadata failed"):
+        await server.collective_rpc("refresh_metadata", require_ack=True)
+
+
+@pytest.mark.asyncio
+async def test_unchecked_collective_rpc_returns_raw_reply_with_unknown_topology():
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    reply = [{"supported": False, "error": "best effort"}]
+    server.engine = SimpleNamespace(collective_rpc=AsyncMock(return_value=reply))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: None)
+
+    assert await server.collective_rpc("update_weights_from_ipc") is reply
+    server.engine.collective_rpc.assert_awaited_once_with(
+        method="update_weights_from_ipc", timeout=None, args=(), kwargs=None, stage_ids=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_omni_adapter_opts_ipc_into_ack_and_preserves_transport_flags():
+    adapter = object.__new__(server_module.vLLMOmniServerAdapter)
+    adapter._ensure_server_handle = MagicMock(return_value=True)
+    pending = asyncio.get_running_loop().create_future()
+    remote = MagicMock(return_value=pending)
+    adapter.server_handle = SimpleNamespace(collective_rpc=SimpleNamespace(remote=remote))
+
+    result = await adapter._execute_method(
+        "update_weights_from_ipc", non_block=True, timeout=3, args=("weights",), kwargs={"ready": True}
+    )
+    assert result is pending
+    remote.assert_called_once_with(
+        "update_weights_from_ipc", timeout=3, args=("weights",), kwargs={"ready": True}, require_ack=True
+    )
+    pending.set_result([None])
+    assert await result == [None]
+
+    completed = asyncio.get_running_loop().create_future()
+    completed.set_result(["ack"])
+    remote.return_value = completed
+    assert await adapter._execute_method("update_weights_from_ipc") == ["ack"]
+
+    adapter._ensure_server_handle.return_value = False
+    remote.reset_mock()
+    assert await adapter._execute_method("update_weights_from_ipc", non_block=True) is None
+    remote.assert_not_called()
+
+    with patch.object(server_module.ServerAdapter, "_execute_method", new_callable=AsyncMock) as inherited:
+        inherited.return_value = "base"
+        assert await adapter._execute_method("optional_control", non_block=True, timeout=2) == "base"
+        inherited.assert_awaited_once_with("optional_control", non_block=True, timeout=2, args=(), kwargs=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("receiver failed"), asyncio.CancelledError()])
+async def test_omni_adapter_propagates_ipc_failure_and_cancellation(error):
+    adapter = object.__new__(server_module.vLLMOmniServerAdapter)
+    adapter._ensure_server_handle = MagicMock(return_value=True)
+    pending = asyncio.get_running_loop().create_future()
+    pending.set_exception(error)
+    adapter.server_handle = SimpleNamespace(collective_rpc=SimpleNamespace(remote=MagicMock(return_value=pending)))
+
+    with pytest.raises(type(error)) as raised:
+        await adapter._execute_method("update_weights_from_ipc")
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [[None], [{"error": "receiver failed"}]])
+async def test_inherited_full_weight_update_requires_ack_before_publishing(reply):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=AsyncMock(return_value=reply))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0])
+
+    adapter = object.__new__(server_module.vLLMOmniServerAdapter)
+    adapter._ensure_server_handle = MagicMock(return_value=True)
+    adapter.zmq_handle = "ipc:///tmp/test-full-weight-sync.sock"
+    adapter.use_shm = False
+    adapter._has_server = True
+    adapter.replica_rank = 0
+    adapter.rollout_rank = 0
+    adapter.config = SimpleNamespace(checkpoint_engine=SimpleNamespace(update_weights_bucket_megabytes=16))
+    rpc_calls = []
+
+    def remote(method, **kwargs):
+        rpc_calls.append((method, kwargs))
+        return asyncio.create_task(server.collective_rpc(method, **kwargs))
+
+    clear_cache = AsyncMock()
+    set_steps = AsyncMock()
+    adapter.server_handle = SimpleNamespace(
+        collective_rpc=SimpleNamespace(remote=remote),
+        clear_kv_cache=SimpleNamespace(remote=clear_cache),
+        set_global_steps=SimpleNamespace(remote=set_steps),
+    )
+    sender = SimpleNamespace(async_send_weights=AsyncMock())
+    upstream_module = inspect.getmodule(server_module.ServerAdapter)
+    with patch.object(upstream_module, "BucketedWeightSender", return_value=sender):
+        if reply == [None]:
+            await adapter.update_weights([("w", torch.zeros(1))], global_steps=7)
+        else:
+            with pytest.raises(RuntimeError, match="update_weights_from_ipc failed"):
+                await adapter.update_weights([("w", torch.zeros(1))], global_steps=7)
+
+    sender.async_send_weights.assert_awaited_once()
+    assert len(rpc_calls) == 1
+    assert rpc_calls[0][0] == "update_weights_from_ipc"
+    assert rpc_calls[0][1]["require_ack"] is True
+    if reply == [None]:
+        clear_cache.assert_awaited_once()
+        set_steps.assert_awaited_once_with(7)
+    else:
+        clear_cache.assert_not_awaited()
+        set_steps.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ValueError("worker failed"), TimeoutError("control timed out")])
+async def test_weight_sync_preserves_raised_error_and_other_controls(error):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=AsyncMock(side_effect=error))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: None)
+    with pytest.raises(type(error)) as raised:
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
+    assert raised.value is error
+    server.engine.collective_rpc = AsyncMock(return_value=[{"supported": False, "error": "optional control"}])
+    assert await server.collective_rpc("optional_control") == [{"supported": False, "error": "optional control"}]
+    server.engine.collective_rpc.assert_awaited_once_with(
+        method="optional_control", timeout=None, args=(), kwargs=None, stage_ids=None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [[0, 1], None])
+async def test_weight_sync_rejects_missing_second_stage_despite_two_first_stage_replies(selected):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=2, collective_rpc=AsyncMock(side_effect=[[None, None], []]))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: selected)
+    with pytest.raises(RuntimeError, match="missing replica results for stage 1"):
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
+    assert [call.kwargs["stage_ids"] for call in server.engine.collective_rpc.await_args_list] == [[0], [1]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [[0, 1], None])
+async def test_weight_sync_rejects_missing_stage_from_pinned_orchestrator(selected):
+    from vllm_omni.engine.messages import CollectiveRPCRequestMessage
+    from vllm_omni.engine.orchestrator import Orchestrator
+    from vllm_omni.entrypoints import AsyncOmni
+
+    pools = [
+        SimpleNamespace(
+            stage_id=stage_id,
+            stage_type="diffusion",
+            live_replica_ids=lambda replica_ids=replica_ids: replica_ids,
+            collective_rpc=AsyncMock(return_value=None),
+        )
+        for stage_id, replica_ids in enumerate(([0, 1], []))
+    ]
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.num_stages = len(pools)
+    orchestrator.stage_pools = pools
+    orchestrator.rpc_async_queue = asyncio.Queue()
+    producer_messages = []
+    requested_stages = []
+
+    async def dispatch(**kwargs):
+        requested_stages.append(kwargs["stage_ids"])
+        request = CollectiveRPCRequestMessage(rpc_id="weight-sync", **kwargs)
+        await orchestrator._handle_collective_rpc(request)
+        result = await orchestrator.rpc_async_queue.get()
+        producer_messages.append(result)
+        # The pinned engine client discards result.stage_ids at this boundary.
+        return result.results
+
+    omni = SimpleNamespace(engine=SimpleNamespace(collective_rpc_async=dispatch))
+
+    async def collective_rpc(**kwargs):
+        return await AsyncOmni.collective_rpc(omni, **kwargs)
+
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=2, collective_rpc=collective_rpc)
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: selected)
+
+    with pytest.raises(RuntimeError, match="missing replica results for stage 1"):
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
+    assert requested_stages == [[0], [1]]
+    assert [message.stage_ids for message in producer_messages] == [[0, 0], []]
+    assert [message.results for message in producer_messages] == [[None, None], []]
+    assert pools[0].collective_rpc.await_count == 2
+    pools[1].collective_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_weight_sync_dispatches_each_selected_stage_once():
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=2, collective_rpc=AsyncMock(side_effect=[[None, None], [None]]))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0, 0, 1])
+
+    assert await server.collective_rpc("update_weights_from_ipc", require_ack=True) == [None, None, None]
+    assert [call.kwargs["stage_ids"] for call in server.engine.collective_rpc.await_args_list] == [[0], [1]]
+
+
+@pytest.mark.asyncio
+async def test_weight_sync_stops_before_next_stage_on_nested_worker_error():
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(
+        num_stages=2,
+        collective_rpc=AsyncMock(side_effect=[[[None], [{"error": "receiver failed"}]], [None]]),
+    )
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0, 1])
+
+    with pytest.raises(RuntimeError, match="receiver failed"):
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
+    server.engine.collective_rpc.assert_awaited_once()
+    assert server.engine.collective_rpc.await_args.kwargs["stage_ids"] == [0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [[0, 1], None])
+async def test_weight_sync_checks_each_stage_with_unequal_replica_counts(selected):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=2, collective_rpc=AsyncMock(side_effect=[[None, None], [None]]))
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: selected)
+
+    assert await server.collective_rpc(
+        "update_weights_from_ipc", timeout=3, args=("weights",), kwargs={"ready": True}, require_ack=True
+    ) == [None, None, None]
+    assert [call.kwargs for call in server.engine.collective_rpc.await_args_list] == [
+        {
+            "method": "update_weights_from_ipc",
+            "timeout": 3,
+            "args": ("weights",),
+            "kwargs": {"ready": True},
+            "stage_ids": [stage_id],
+        }
+        for stage_id in (0, 1)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("num_stages", "selected"), [(2, []), (0, None), (None, [0]), (2, [2])])
+async def test_weight_sync_rejects_empty_or_unknown_stages_before_dispatch(num_stages, selected):
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=num_stages, collective_rpc=AsyncMock())
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: selected)
+
+    with pytest.raises(RuntimeError, match="update_weights_from_ipc failed"):
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
+    server.engine.collective_rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("receiver failed"), TimeoutError("receiver timed out")])
+async def test_weight_sync_rejects_pinned_stage_pool_error_envelope(error):
+    from vllm_omni.engine.stage_pool import StagePool
+    from vllm_omni.entrypoints import AsyncOmni
+
+    # Exercise the pinned producer's exception-to-data conversion, not a
+    # fabricated error dictionary. No model or transport process is needed.
+    pool = object.__new__(StagePool)
+    pool.stage_id = 0
+    pool.clients = [SimpleNamespace(stage_type="diffusion", collective_rpc_async=AsyncMock(side_effect=error))]
+
+    async def dispatch(**kwargs):
+        kwargs.pop("stage_ids")
+        return [await pool.collective_rpc(replica_id=0, **kwargs)]
+
+    omni = SimpleNamespace(engine=SimpleNamespace(collective_rpc_async=dispatch))
+
+    async def collective_rpc(**kwargs):
+        return await AsyncOmni.collective_rpc(omni, **kwargs)
+
+    server = object.__new__(server_module.vLLMOmniHttpServer)
+    server.engine = SimpleNamespace(num_stages=1, collective_rpc=collective_rpc)
+    server._generate_strategy = SimpleNamespace(collective_rpc_stage_ids=lambda method: [0])
+    with pytest.raises(RuntimeError, match="timed out" if isinstance(error, TimeoutError) else str(error)):
+        await server.collective_rpc("update_weights_from_ipc", require_ack=True)
 
 
 def test_ar_strategy_preserves_qwen3_omni_thinker_only_contract():
