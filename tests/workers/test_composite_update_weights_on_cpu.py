@@ -19,6 +19,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import torch
 from omegaconf import OmegaConf
 
@@ -40,8 +41,13 @@ def _make_diffusion_model_config(*, lora_rank: int = 0) -> object:
     return model_cfg
 
 
-def _make_composite_engine(enable_lora: bool = False) -> CompositeFSDPEngine:
-    # Apply or not lora for both AR and DiT
+def _make_composite_engine(
+    enable_lora: bool = False,
+    *,
+    dit_lora: bool | None = None,
+    ar_lora: bool | None = None,
+) -> CompositeFSDPEngine:
+    # Apply or not lora for both AR and DiT (or independently for mismatch tests).
     engine = CompositeFSDPEngine.__new__(CompositeFSDPEngine)
     engine.ar_engine = MagicMock(name="ar_engine")
     engine.dit_engine = MagicMock(name="dit_engine")
@@ -49,7 +55,9 @@ def _make_composite_engine(enable_lora: bool = False) -> CompositeFSDPEngine:
     engine.current_engine = engine.ar_engine
     engine.ar_engine.is_param_offload_enabled = False
     engine.dit_engine.is_param_offload_enabled = False
-    engine.model_config = _make_diffusion_model_config(lora_rank=8 if enable_lora else 0)
+    dit_enabled = enable_lora if dit_lora is None else dit_lora
+    ar_enabled = enable_lora if ar_lora is None else ar_lora
+    engine.model_config = _make_diffusion_model_config(lora_rank=8 if (dit_enabled or ar_enabled) else 0)
 
     def _attach_lora(sub_engine: MagicMock, enabled: bool):
         if not enabled:
@@ -60,8 +68,8 @@ def _make_composite_engine(enable_lora: bool = False) -> CompositeFSDPEngine:
             _fsdp_wrapped_module=SimpleNamespace(peft_config={"default": peft_cfg}),
         )
 
-    _attach_lora(engine.dit_engine, enable_lora)
-    _attach_lora(engine.ar_engine, enable_lora)
+    _attach_lora(engine.dit_engine, dit_enabled)
+    _attach_lora(engine.ar_engine, ar_enabled)
     return engine
 
 
@@ -130,6 +138,47 @@ class TestCompositeEngineLoraDetection:
         assert cfg["r"] == 8
         assert cfg["lora_alpha"] == 16
         assert cfg["exclude_modules"] == ".*visual.*"
+
+
+class TestCompositePeftContract:
+    def test_initialize_rejects_dit_lora_without_ar_peft(self):
+        engine = _make_composite_engine(dit_lora=True, ar_lora=False)
+        with pytest.raises(ValueError, match="both full weights or both LoRA"):
+            engine.initialize()
+
+    def test_initialize_rejects_ar_lora_without_dit_peft(self):
+        engine = _make_composite_engine(dit_lora=False, ar_lora=True)
+        with pytest.raises(ValueError, match="both full weights or both LoRA"):
+            engine.initialize()
+
+    def test_initialize_accepts_matched_full_and_lora(self):
+        for enable_lora in (False, True):
+            engine = _make_composite_engine(enable_lora)
+            engine.initialize()  # does not raise
+
+    def test_get_lora_peft_config_rejects_mismatch_instead_of_attribute_error(self):
+        # Previously DiT-LoRA + non-PEFT AR crashed on ar_peft_model.peft_config.
+        engine = _make_composite_engine(dit_lora=True, ar_lora=False)
+        with pytest.raises(ValueError, match="both full weights or both LoRA"):
+            engine.get_lora_peft_config()
+
+    def test_get_lora_peft_config_rejects_reverse_mismatch_instead_of_silent_none(self):
+        # Previously DiT-full + AR-LoRA returned None so update_weights took the full path.
+        engine = _make_composite_engine(dit_lora=False, ar_lora=True)
+        with pytest.raises(ValueError, match="both full weights or both LoRA"):
+            engine.get_lora_peft_config()
+
+    def test_disable_adapter_is_noop_without_peft(self):
+        engine = _make_composite_engine(False)
+        with engine.disable_adapter():
+            pass
+        engine.ar_engine.disable_adapter.assert_not_called()
+        engine.dit_engine.disable_adapter.assert_not_called()
+
+    def test_disable_adapter_rejects_mismatch(self):
+        engine = _make_composite_engine(dit_lora=True, ar_lora=False)
+        with pytest.raises(ValueError, match="both full weights or both LoRA"):
+            engine.disable_adapter()
 
 
 class TestCompositeUpdateWeightsNaive:

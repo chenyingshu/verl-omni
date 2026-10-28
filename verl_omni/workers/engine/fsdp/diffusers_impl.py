@@ -1698,6 +1698,31 @@ class CompositeFSDPEngine(BaseEngine):
     def initialize(self) -> None:
         self.ar_engine.initialize()
         self.dit_engine.initialize()
+        # Rollout sync and disable_adapter assume matched PEFT on both sides.
+        self._assert_matched_peft_contract()
+
+    @staticmethod
+    def _unwrap_peft_model(engine) -> Any | None:
+        """Return the PEFT-wrapped module for ``engine``, or ``None`` if full-weight."""
+        module = getattr(engine, "module", None)
+        peft_model = getattr(module, "_fsdp_wrapped_module", module) if module is not None else None
+        if peft_model is None or not hasattr(peft_model, "peft_config"):
+            return None
+        return peft_model
+
+    def _assert_matched_peft_contract(self) -> None:
+        """Reject DiT/AR PEFT mismatches (both full weights or both LoRA only)."""
+        dit_peft = self._unwrap_peft_model(self.dit_engine)
+        ar_peft = self._unwrap_peft_model(self.ar_engine)
+        if (dit_peft is None) == (ar_peft is None):
+            return
+        dit_mode = "LoRA" if dit_peft is not None else "full weights"
+        ar_mode = "LoRA" if ar_peft is not None else "full weights"
+        raise ValueError(
+            "CompositeFSDPEngine requires both AR and DiT to use the same training mode "
+            f"(both full weights or both LoRA); got DiT={dit_mode}, AR={ar_mode}. "
+            "Mismatched PEFT breaks rollout weight sync and disable_adapter."
+        )
 
     def next_stage(self) -> None:
         """Switch stage and engine"""
@@ -1863,16 +1888,15 @@ class CompositeFSDPEngine(BaseEngine):
 
     def get_lora_peft_config(self, adapter_name: str = "default") -> dict[str, Any] | None:
         """PEFT metadata for colocated diffusion rollout LoRA apply."""
-        dit_module = getattr(self.dit_engine, "module", None)
-        dit_peft_model = getattr(dit_module, "_fsdp_wrapped_module", dit_module) if dit_module is not None else None
-        # no lora peft config
-        if dit_peft_model is None or not hasattr(dit_peft_model, "peft_config"):
+        self._assert_matched_peft_contract()
+        dit_peft_model = self._unwrap_peft_model(self.dit_engine)
+        # no lora peft config (contract: AR is also full-weight)
+        if dit_peft_model is None:
             return None
 
-        dit_peft_config = dit_peft_model.peft_config.get("default", None)
-        ar_module = getattr(self.ar_engine, "module", None)
-        ar_peft_model = getattr(ar_module, "_fsdp_wrapped_module", ar_module) if ar_module is not None else None
-        ar_peft_config = ar_peft_model.peft_config.get("default", None)
+        dit_peft_config = dit_peft_model.peft_config.get(adapter_name, None)
+        ar_peft_model = self._unwrap_peft_model(self.ar_engine)
+        ar_peft_config = ar_peft_model.peft_config.get(adapter_name, None)
 
         # currently only support lora.merge=True
         merge_lora = resolve_lora_config(self.model_config).merge
@@ -1884,6 +1908,7 @@ class CompositeFSDPEngine(BaseEngine):
     def get_per_tensor_param(
         self, layered_summon=False, base_sync_done=False, adapter_name: str | None = None, **kwargs
     ):
+        self._assert_matched_peft_contract()
         dit_params, dit_peft = self.dit_engine.get_per_tensor_param(
             layered_summon=layered_summon,
             base_sync_done=base_sync_done,
@@ -1909,7 +1934,60 @@ class CompositeFSDPEngine(BaseEngine):
         )
         return merged(), merged_peft_config
 
+    def get_per_tensor_param_shard(self, **kwargs):
+        """Merge DiT + AR local shards for ``omni_delta_sharded`` (full-weight only).
+
+        DiT already yields ``transformer.*`` names; AR names from verl's FSDP engine
+        are unprefixed and get the same ``text_encoder.`` prefix as
+        :meth:`get_per_tensor_param`.
+        """
+        self._assert_matched_peft_contract()
+        if self._unwrap_peft_model(self.dit_engine) is not None:
+            raise NotImplementedError(
+                "omni_delta_sharded shard export supports full-weight training only; LoRA runs "
+                "keep the adapter (merge=false) or merged full-weight (merge=true) sync paths."
+            )
+
+        dit_gen, _ = self.dit_engine.get_per_tensor_param_shard(**kwargs)
+        ar_gen, _ = self.ar_engine.get_per_tensor_param_shard(**kwargs)
+
+        def merged():
+            yield from dit_gen
+            for name, local, spec in ar_gen:
+                yield f"text_encoder.{name}", local, spec
+
+        return merged(), None
+
+    def _hf_delta_entry(self, name, spec, place, lidx, lval):
+        """Identity HF delta entry for both DiT and AR composite weights."""
+        from verl.workers.engine.utils import _hf_entry_identity
+
+        if spec.to_hf_chunk is not None:
+            raise NotImplementedError(
+                f"{name}: CompositeFSDPEngine only handles identity params; "
+                "converter specs belong to the engine that declared them"
+            )
+        return _hf_entry_identity(name, spec, place, lidx, lval)
+
+    def get_per_tensor_param_delta_shard(self, **kwargs):
+        """Steady ``omni_delta_sharded`` payloads over the merged DiT+AR shard export.
+
+        Snapshot state lives on this composite (via :meth:`prime_delta_snapshots`),
+        not on the sub-engines, so deltas stay consistent with the merged names.
+        """
+        from verl.workers.engine.utils import hf_delta_export
+
+        self._delta_shard_snap = getattr(self, "_delta_shard_snap", {})
+        gen, _ = self.get_per_tensor_param_shard()
+        return hf_delta_export(gen, self._delta_shard_snap, self._hf_delta_entry), None
+
     def disable_adapter(self):
+        self._assert_matched_peft_contract()
+        # Full-weight composite: verl's AR ``disable_adapter`` and DiT PEFT helpers
+        # both assume a PEFT module; no-op when neither side injected LoRA.
+        if self._unwrap_peft_model(self.dit_engine) is None:
+            return nullcontext()
+
         ar_ctx = self.ar_engine.disable_adapter()
         dit_ctx = self.dit_engine.disable_adapter()
 

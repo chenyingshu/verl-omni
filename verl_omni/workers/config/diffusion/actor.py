@@ -218,6 +218,7 @@ class DiffusionActorConfig(BaseConfig):
         assert self.rollout_n != MISSING
         valid_loss_agg_modes = [
             "token-mean",
+            "token-sum",
             "seq-mean-token-sum",
             "seq-mean-token-mean",
             "seq-mean-token-sum-norm",

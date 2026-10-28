@@ -423,6 +423,61 @@ class TestCompositeEngineDelegation:
         assert peft["lora_alpha"] == 16
         assert peft["exclude_modules"] == ".*visual.*"
 
+    def test_get_per_tensor_param_shard_prefixes_ar_weights(self):
+        from verl.workers.engine.spec import ShardSpec
+
+        engine = _make_composite_engine()
+        from verl_omni.workers.config.diffusion.model import DiffusionModelConfig
+
+        model_cfg = object.__new__(DiffusionModelConfig)
+        object.__setattr__(model_cfg, "lora_rank", 0)
+        object.__setattr__(model_cfg, "lora", {})
+        engine.model_config = model_cfg
+        # Full-weight modules: no peft_config on either side.
+        engine.dit_engine.module = MagicMock(spec=[])
+        engine.ar_engine.module = MagicMock(spec=[])
+
+        dit_local = torch.tensor([1.0, 2.0])
+        ar_local = torch.tensor([3.0, 4.0, 5.0])
+        dit_spec = ShardSpec(full_shape=(2,))
+        ar_spec = ShardSpec(full_shape=(3,))
+        engine.dit_engine.get_per_tensor_param_shard.return_value = (
+            iter([("transformer.blocks.0.weight", dit_local, dit_spec)]),
+            None,
+        )
+        engine.ar_engine.get_per_tensor_param_shard.return_value = (
+            iter([("lm_head.weight", ar_local, ar_spec)]),
+            None,
+        )
+
+        shards = list(engine.get_per_tensor_param_shard()[0])
+        assert [name for name, _, _ in shards] == [
+            "transformer.blocks.0.weight",
+            "text_encoder.lm_head.weight",
+        ]
+        assert torch.equal(shards[0][1], dit_local)
+        assert torch.equal(shards[1][1], ar_local)
+        assert shards[0][2] is dit_spec and shards[1][2] is ar_spec
+
+    def test_get_per_tensor_param_shard_rejects_lora(self):
+        from types import SimpleNamespace
+
+        engine = _make_composite_engine()
+        from verl_omni.workers.config.diffusion.model import DiffusionModelConfig
+
+        model_cfg = object.__new__(DiffusionModelConfig)
+        object.__setattr__(model_cfg, "lora_rank", 8)
+        object.__setattr__(model_cfg, "lora", {})
+        engine.model_config = model_cfg
+        peft_module = SimpleNamespace(
+            _fsdp_wrapped_module=SimpleNamespace(peft_config={"default": object()}),
+        )
+        engine.dit_engine.module = peft_module
+        engine.ar_engine.module = peft_module
+
+        with pytest.raises(NotImplementedError, match="full-weight"):
+            engine.get_per_tensor_param_shard()
+
     def test_to_offloads_both_sub_engines(self):
         engine = _make_composite_engine()
         engine.to("cpu", model=True, optimizer=False, grad=False)
