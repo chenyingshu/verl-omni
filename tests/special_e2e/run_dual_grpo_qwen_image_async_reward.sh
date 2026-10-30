@@ -75,6 +75,7 @@ python3 tests/special_e2e/create_dummy_diffusion_data.py \
     --val_size 4
 
 python3 -m verl_omni.trainer.main_diffusion \
+    trainer.use_v1=false \
     algorithm.adv_estimator=flow_grpo \
     data.train_files="${dummy_train_path}" \
     data.val_files="${dummy_test_path}" \
@@ -148,7 +149,7 @@ python3 -m verl_omni.trainer.main_diffusion \
     "+reward.reward_functions.ar.path=pkg://verl_omni.utils.reward_score.jpeg_compressibility" \
     '+reward.reward_functions.ar.name=compute_score' \
     '+reward.reward_functions.ar.weight=0.0' \
-    "+reward.reward_functions.dit.path=verl_omni/utils/reward_score/genrm_ocr.py" \
+    "+reward.reward_functions.dit.path=pkg://verl_omni.utils.reward_score.genrm_ocr" \
     '+reward.reward_functions.dit.name=compute_score_ocr' \
     '+reward.reward_functions.dit.weight=1.0' \
     "+trainer.train_ar=True" \
