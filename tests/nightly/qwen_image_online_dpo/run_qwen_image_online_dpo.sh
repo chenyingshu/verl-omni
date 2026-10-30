@@ -14,12 +14,12 @@ export L3_TEST_CASE=${L3_TEST_CASE:-qwen_image_online_dpo}
 export L3_ALGORITHM=${L3_ALGORITHM:-online-dpo}
 export L3_CASE_LABEL=${L3_CASE_LABEL:-"Qwen-Image online DPO"}
 export L3_DATA_SOURCE=${L3_DATA_SOURCE:-qwen_image_online_dpo}
-export NUM_GPUS=${NUM_GPUS:-2}
+export NUM_GPUS=${NUM_GPUS:-1}
 export REWARD_TP=${REWARD_TP:-1}
 
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-256}
-N_RESP_PER_PROMPT=${N_RESP_PER_PROMPT:-2}
-MICRO_BSZ_PER_GPU=${MICRO_BSZ_PER_GPU:-2}
+N_RESP_PER_PROMPT=${N_RESP_PER_PROMPT:-4}
+MICRO_BSZ_PER_GPU=${MICRO_BSZ_PER_GPU:-4}
 MICRO_BSZ=$((MICRO_BSZ_PER_GPU * NUM_GPUS))
 MINI_BSZ=${MICRO_BSZ}
 export TRAIN_BATCH_SIZE=${MINI_BSZ}
@@ -29,7 +29,7 @@ REWARD_ENGINE=vllm
 ATTN_BACKEND=${ATTN_BACKEND:-native}
 ROLLOUT_ATTN_BACKEND=${ROLLOUT_ATTN_BACKEND:-TORCH_SDPA}
 
-bash "${REPO_ROOT}/tests/nightly/common/run_l3_case.sh" \
+bash "${REPO_ROOT}/tests/nightly/run_l3_case.sh" \
     algorithm.trainer_type=direct_preference \
     algorithm.sample_source=online \
     algorithm.paired_preference=true \

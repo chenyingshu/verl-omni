@@ -2,12 +2,12 @@
 # Shared L3 nightly runner. Case scripts export L3_* / TRAIN_BATCH_SIZE and
 # pass the v1 trainer Hydra overrides as arguments.
 #
-# Training always goes through tests/nightly/common/run.py, which starts
+# Training always goes through tests/nightly/run.py, which starts
 # verl_omni.trainer.main_diffusion_v1. Do not point a case at the v0 trainer.
 set -xeuo pipefail
 
-COMMON_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd -- "${COMMON_DIR}/../../.." && pwd)
+NIGHTLY_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "${NIGHTLY_DIR}/../.." && pwd)
 
 : "${L3_TEST_CASE:?set L3_TEST_CASE}"
 : "${L3_ALGORITHM:?set L3_ALGORITHM}"
@@ -69,12 +69,12 @@ export TRAIN_FILES VAL_FILES ATTN_BACKEND ROLLOUT_ATTN_BACKEND
 rm -rf "${CURRENT_DUMP_DIR}"
 mkdir -p "${CURRENT_DUMP_DIR}" "${BASELINE_DUMP_DIR}" "${LOG_DIR}"
 
-python3 "${COMMON_DIR}/env_metadata.py" \
+python3 "${NIGHTLY_DIR}/env_metadata.py" \
     --output "${ENV_METADATA_JSON}" \
     --attn-backend "${ATTN_BACKEND}" \
     --rollout-attn-backend "${ROLLOUT_ATTN_BACKEND}"
 
-python3 "${COMMON_DIR}/create_single_sample_data.py" \
+python3 "${NIGHTLY_DIR}/create_single_sample_data.py" \
     --local_save_dir "${DATA_DIR}" \
     --train_size "${TRAIN_BATCH_SIZE}" \
     --val_size 4 \
@@ -85,7 +85,7 @@ export DEBUG_DUMP_DIR="${CURRENT_DUMP_DIR}"
 export DEBUG_DUMP_STEPS
 export DEBUG_METRICS_JSONL
 
-python3 "${COMMON_DIR}/run.py" \
+python3 "${NIGHTLY_DIR}/run.py" \
     data.train_files="${TRAIN_FILES}" \
     data.val_files="${VAL_FILES}" \
     "$@" 2>&1 | tee "${CONSOLE_LOG}"
@@ -104,7 +104,7 @@ if [ "${BOOTSTRAP_MISSING_BASELINE}" = "1" ]; then
 fi
 
 METRICS_STATUS=0
-python3 "${COMMON_DIR}/collect_metrics.py" \
+python3 "${NIGHTLY_DIR}/collect_metrics.py" \
     --metrics-jsonl "${DEBUG_METRICS_JSONL}" \
     --log-file "${CONSOLE_LOG}" \
     --baseline "${BASELINE_METRICS_JSON}" \
@@ -116,7 +116,7 @@ python3 "${COMMON_DIR}/collect_metrics.py" \
     "${BOOTSTRAP_ARGS[@]}" || METRICS_STATUS=$?
 
 DUMP_STATUS=0
-python3 "${COMMON_DIR}/compare_dumps.py" \
+python3 "${NIGHTLY_DIR}/compare_dumps.py" \
     --baseline "${BASELINE_DUMP_DIR}" \
     --current "${CURRENT_DUMP_DIR}" \
     --output "${DUMP_COMPARE_JSON}" \

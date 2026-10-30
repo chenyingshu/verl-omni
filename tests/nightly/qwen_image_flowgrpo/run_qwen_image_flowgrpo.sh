@@ -25,7 +25,7 @@ REWARD_ENGINE=vllm
 ATTN_BACKEND=${ATTN_BACKEND:-native}
 ROLLOUT_ATTN_BACKEND=${ROLLOUT_ATTN_BACKEND:-TORCH_SDPA}
 
-bash "${REPO_ROOT}/tests/nightly/common/run_l3_case.sh" \
+bash "${REPO_ROOT}/tests/nightly/run_l3_case.sh" \
     algorithm.adv_estimator=flow_grpo \
     data.train_batch_size=${TRAIN_BATCH_SIZE} \
     data.max_prompt_length=${MAX_PROMPT_LENGTH} \
